@@ -1,0 +1,117 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-dark-border;
+  }
+
+  body {
+    @apply bg-dark-bg text-dark-text antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-dark-bg;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-dark-border rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-600;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-dark-card rounded-xl border border-dark-border p-6 shadow-lg;
+  }
+
+  .card-header {
+    @apply text-sm font-medium text-dark-muted mb-4;
+  }
+
+  .stat-value {
+    @apply text-3xl font-bold text-dark-text;
+  }
+
+  .stat-label {
+    @apply text-sm text-dark-muted mt-1;
+  }
+
+  .stat-change-positive {
+    @apply text-green-500 text-sm flex items-center gap-1;
+  }
+
+  .stat-change-negative {
+    @apply text-red-500 text-sm flex items-center gap-1;
+  }
+
+  .tab {
+    @apply px-4 py-2 text-sm font-medium text-dark-muted hover:text-dark-text transition-colors;
+  }
+
+  .tab-active {
+    @apply text-dark-text border-b-2 border-primary-500;
+  }
+
+  .filter-button {
+    @apply px-3 py-1.5 text-sm rounded-lg border border-dark-border bg-dark-card hover:bg-slate-700 transition-colors flex items-center gap-2;
+  }
+
+  .filter-button-active {
+    @apply bg-primary-600 border-primary-500 text-white;
+  }
+
+  .table-header {
+    @apply text-xs font-medium text-dark-muted uppercase tracking-wider;
+  }
+
+  .table-cell {
+    @apply py-3 text-sm text-dark-text;
+  }
+
+  .gauge-container {
+    @apply relative w-full aspect-[2/1];
+  }
+
+  .progress-bar {
+    @apply h-2 bg-dark-border rounded-full overflow-hidden;
+  }
+
+  .progress-bar-fill {
+    @apply h-full bg-gradient-to-r from-primary-500 to-primary-400 rounded-full transition-all duration-500;
+  }
+
+  .metric-card {
+    @apply bg-dark-card rounded-xl border border-dark-border p-5 hover:border-primary-500/50 transition-all duration-300;
+  }
+
+  .metric-value-large {
+    @apply text-4xl font-bold tracking-tight;
+  }
+
+  .chart-container {
+    @apply w-full h-[300px];
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    @apply bg-gradient-to-r from-primary-400 to-cyan-400 bg-clip-text text-transparent;
+  }
+
+  .glow-effect {
+    @apply shadow-glow;
+  }
+
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+}

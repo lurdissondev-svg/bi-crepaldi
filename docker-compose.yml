@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - BITRIX24_WEBHOOK_URL=${BITRIX24_WEBHOOK_URL}
+      - BITRIX24_DOMAIN=${BITRIX24_DOMAIN}
+      - BELLE_API_URL=${BELLE_API_URL}
+      - BELLE_API_KEY=${BELLE_API_KEY}
+      - BELLE_CLIENT_ID=${BELLE_CLIENT_ID}
+      - BELLE_CLIENT_SECRET=${BELLE_CLIENT_SECRET}
+      - CACHE_TTL=300
+      - FRONTEND_URL=http://localhost:80
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+networks:
+  default:
+    name: bi-crepaldi-network

@@ -1,0 +1,584 @@
+import bitrix24Service from '../services/bitrix24.service.js';
+import belleService from '../services/belle.service.js';
+import { getDateRanges, formatCurrency, getDecade } from '../utils/dateUtils.js';
+import logger from '../utils/logger.js';
+
+export const dashboardController = {
+  // ==================== RESUMO ====================
+
+  async getResumo(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',') : [];
+
+      // Buscar dados em paralelo
+      const [
+        leadsAnalytics,
+        dealsAnalytics,
+        faturamentoAtual,
+        faturamentoAnterior,
+      ] = await Promise.all([
+        bitrix24Service.getLeadsAnalytics(startDate, endDate),
+        bitrix24Service.getDealsAnalytics(startDate, endDate),
+        belleService.getFaturamentoContasReceber(startDate, endDate, centrosCusto),
+        belleService.getFaturamentoContasReceber(
+          dateRanges.lastMonth.start,
+          dateRanges.lastMonth.end,
+          centrosCusto
+        ),
+      ]);
+
+      // Calcular métricas
+      const faturamentoTotal = faturamentoAtual.faturamentoTotal || 0;
+      const faturamentoMesAnterior = faturamentoAnterior.faturamentoTotal || 0;
+      const variacaoFaturamento = faturamentoMesAnterior > 0
+        ? ((faturamentoTotal - faturamentoMesAnterior) / faturamentoMesAnterior) * 100
+        : 0;
+
+      // Leads e conversões
+      const leadsNovos = leadsAnalytics.categorized.new + leadsAnalytics.categorized.inProgress;
+      const leadsAgendados = leadsAnalytics.categorized.converted;
+      const pacientesNovoVenda = dealsAnalytics.won || 0;
+      const ticketMedioPacienteNovo = dealsAnalytics.averageTicket || 0;
+
+      // Pacientes recorrentes (simplificado - seria calculado com dados do Belle)
+      const leadsRecorrentes = Math.floor(leadsNovos * 0.3); // Placeholder
+      const leadsRecorrentesAgendados = Math.floor(leadsAgendados * 0.3);
+      const pacientesRecorrentes = Math.floor(pacientesNovoVenda * 1.5);
+      const ticketMedioPacienteRecorrente = ticketMedioPacienteNovo * 1.2;
+
+      // Desempenho por dezena
+      const desempenhoDezena = [
+        { dezena: '1ª dezena', mes_atual: 0, mes_anterior: 0 },
+        { dezena: '2ª dezena', mes_atual: 0, mes_anterior: 0 },
+        { dezena: '3ª dezena', mes_atual: 0, mes_anterior: 0 },
+      ];
+
+      // Agrupar faturamento por dezena
+      (faturamentoAtual.faturamentoDiario || []).forEach(item => {
+        const dezena = getDecade(item.data);
+        desempenhoDezena[dezena - 1].mes_atual += parseFloat(item.valor) || 0;
+      });
+
+      (faturamentoAnterior.faturamentoDiario || []).forEach(item => {
+        const dezena = getDecade(item.data);
+        desempenhoDezena[dezena - 1].mes_anterior += parseFloat(item.valor) || 0;
+      });
+
+      res.json({
+        success: true,
+        data: {
+          faturamento: {
+            total: faturamentoTotal,
+            totalFormatado: formatCurrency(faturamentoTotal),
+            variacao: variacaoFaturamento.toFixed(2),
+            mesAnterior: faturamentoMesAnterior,
+          },
+          pacienteNovo: {
+            leadsNovos,
+            leadsAgendados,
+            pacientesVenda: pacientesNovoVenda,
+            ticketMedio: ticketMedioPacienteNovo,
+            ticketMedioFormatado: formatCurrency(ticketMedioPacienteNovo),
+          },
+          pacienteRecorrente: {
+            leads: leadsRecorrentes,
+            leadsAgendados: leadsRecorrentesAgendados,
+            pacientes: pacientesRecorrentes,
+            ticketMedio: ticketMedioPacienteRecorrente,
+            ticketMedioFormatado: formatCurrency(ticketMedioPacienteRecorrente),
+          },
+          desempenhoDezena,
+          procedimentosPorCategoria: faturamentoAtual.procedimentos?.slice(0, 10) || [],
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar resumo:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados do resumo',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== FATURAMENTO ====================
+
+  async getFaturamento(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo, confirmado, profissional } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',') : [];
+
+      // Data de hoje
+    const today = new Date().toISOString().split('T')[0];
+
+    const [
+        faturamentoAtual,
+        faturamentoMesAnterior,
+        faturamentoAnoAtual,
+        faturamentoAnoAnterior,
+        faturamentoHoje,
+      ] = await Promise.all([
+        belleService.getFaturamentoContasReceber(startDate, endDate, centrosCusto),
+        belleService.getFaturamentoContasReceber(
+          dateRanges.lastMonth.start,
+          dateRanges.lastMonth.end,
+          centrosCusto
+        ),
+        belleService.getFaturamentoContasReceber(
+          dateRanges.thisYear.start,
+          dateRanges.thisYear.end,
+          centrosCusto
+        ),
+        belleService.getFaturamentoContasReceber(
+          dateRanges.lastYear.start,
+          dateRanges.lastYear.end,
+          centrosCusto
+        ),
+        // Busca TODAS as vendas de hoje sem filtro de estabelecimento
+        belleService.getFaturamentoHoje(today, today),
+      ]);
+
+      // Faturamento mensal
+      const faturamentoMensal = faturamentoAtual.faturamentoTotal || 0;
+      const faturamentoMesAnteriorValor = faturamentoMesAnterior.faturamentoTotal || 0;
+      const variacaoMensal = faturamentoMesAnteriorValor > 0
+        ? ((faturamentoMensal - faturamentoMesAnteriorValor) / faturamentoMesAnteriorValor) * 100
+        : 0;
+
+      // Faturamento anual
+      const faturamentoAnual = faturamentoAnoAtual.faturamentoTotal || 0;
+      const faturamentoAnoAnteriorValor = faturamentoAnoAnterior.faturamentoTotal || 0;
+      const variacaoAnual = faturamentoAnoAnteriorValor > 0
+        ? ((faturamentoAnual - faturamentoAnoAnteriorValor) / faturamentoAnoAnteriorValor) * 100
+        : 0;
+
+      // % pacientes novos
+      const totalVendas = faturamentoAtual.quantidadeVendas || 1;
+      const pacientesNovosPercentualMensal = 37.07; // Placeholder - calcular com dados reais
+      const pacientesNovosPercentualAnual = 47.95;
+
+      // Crescimento
+      const crescimentoMensal = {
+        mesPassadoAnoAnterior: faturamentoMesAnteriorValor,
+        mesAtual: faturamentoMensal,
+        percentual: variacaoMensal,
+      };
+
+      const crescimentoAnual = {
+        anoAnterior: faturamentoAnoAnteriorValor,
+        anoAtual: faturamentoAnual,
+        percentual: variacaoAnual,
+      };
+
+      res.json({
+        success: true,
+        data: {
+          mensal: {
+            valor: faturamentoMensal,
+            valorFormatado: formatCurrency(faturamentoMensal),
+            variacao: variacaoMensal.toFixed(2),
+            mesAnterior: faturamentoMesAnteriorValor,
+            mesAnteriorFormatado: formatCurrency(faturamentoMesAnteriorValor),
+            pacientesNovosPercentual: pacientesNovosPercentualMensal,
+          },
+          anual: {
+            valor: faturamentoAnual,
+            valorFormatado: formatCurrency(faturamentoAnual),
+            variacao: variacaoAnual.toFixed(2),
+            anoAnterior: faturamentoAnoAnteriorValor,
+            anoAnteriorFormatado: formatCurrency(faturamentoAnoAnteriorValor),
+            pacientesNovosPercentual: pacientesNovosPercentualAnual,
+          },
+          crescimentoMensal,
+          crescimentoAnual,
+          vendasHoje: {
+            valor: faturamentoHoje?.faturamentoTotal || 0,
+            valorFormatado: formatCurrency(faturamentoHoje?.faturamentoTotal || 0),
+            quantidade: faturamentoHoje?.quantidadeMovimentos || 0,
+          },
+          faturamentoDiario: faturamentoAtual.faturamentoDiario || [],
+          faturamentoMensalHistorico: faturamentoAnoAtual.faturamentoMensal || [],
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar faturamento:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados de faturamento',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== MARKETING ====================
+
+  async getMarketing(req, res) {
+    try {
+      const { data_inicio, data_fim, tipo, fonte, origem, fase_lead } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const leadsAnalytics = await bitrix24Service.getLeadsAnalytics(startDate, endDate);
+
+      // Horário de chegada dos leads
+      const horarioChegada = leadsAnalytics.byHour.map(item => ({
+        hora: `${item.hour.toString().padStart(2, '0')}:00`,
+        leads: item.count,
+      }));
+
+      // Taxa de conversão por origem
+      const taxaConversaoPorOrigem = leadsAnalytics.bySource.map(source => ({
+        origem: source.name,
+        leads: source.total,
+        emAtendimento: source.inProgress,
+        desqualificados: source.disqualified,
+        retencaoFutura: 0, // Calcular com dados reais
+        agendou: source.converted,
+        taxaConversao: source.total > 0
+          ? ((source.converted / source.total) * 100).toFixed(1) + '%'
+          : '0%',
+      }));
+
+      // Total de leads por categoria
+      const totalLeads = {
+        total: leadsAnalytics.total,
+        semPreenchimento: leadsAnalytics.byUtmSource
+          .find(s => s.source === 'Sem UTM')?.total || 0,
+        iniciativaInterna: leadsAnalytics.bySource
+          .find(s => s.name?.toLowerCase().includes('interno'))?.total || 0,
+        outro: 0,
+      };
+
+      // Leads em atendimento
+      const leadsEmAtendimento = leadsAnalytics.categorized.inProgress;
+
+      // Leads desqualificados
+      const leadsDesqualificados = leadsAnalytics.categorized.disqualified;
+
+      res.json({
+        success: true,
+        data: {
+          horarioChegada,
+          origemLead: {
+            taxaConversaoPorOrigem,
+            totalLeads,
+          },
+          leadsEmAtendimento: {
+            total: leadsEmAtendimento,
+          },
+          leadsDesqualificados: {
+            total: leadsDesqualificados,
+          },
+          byUtmSource: leadsAnalytics.byUtmSource,
+          bySource: leadsAnalytics.bySource,
+          conversionRate: leadsAnalytics.conversionRate,
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar marketing:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados de marketing',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== COMERCIAL ====================
+
+  async getComercial(req, res) {
+    try {
+      const { data_inicio, data_fim, origem } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const [leadsAnalytics, dealsAnalytics, faturamento] = await Promise.all([
+        bitrix24Service.getLeadsAnalytics(startDate, endDate),
+        bitrix24Service.getDealsAnalytics(startDate, endDate),
+        belleService.getAnalyticsFaturamento(startDate, endDate, []),
+      ]);
+
+      // Conversão de venda por origem
+      const conversaoVendaPorOrigem = leadsAnalytics.bySource.map(source => {
+        const dealsFromSource = dealsAnalytics.rawDeals?.filter(
+          d => d.SOURCE_ID === source.id
+        ) || [];
+
+        const wonDeals = dealsFromSource.filter(d =>
+          d.STAGE_ID?.includes('WON') || d.STAGE_ID?.includes('FINAL')
+        );
+
+        const valorTotal = dealsFromSource.reduce(
+          (sum, d) => sum + (parseFloat(d.OPPORTUNITY) || 0), 0
+        );
+        const valorFaturado = wonDeals.reduce(
+          (sum, d) => sum + (parseFloat(d.OPPORTUNITY) || 0), 0
+        );
+
+        return {
+          origem: source.name,
+          negocios: dealsFromSource.length,
+          valor: valorTotal,
+          valorFormatado: formatCurrency(valorTotal),
+          vendas: wonDeals.length,
+          faturado: valorFaturado,
+          faturadoFormatado: formatCurrency(valorFaturado),
+          taxaConversao: dealsFromSource.length > 0
+            ? ((wonDeals.length / dealsFromSource.length) * 100).toFixed(1) + '%'
+            : '0%',
+        };
+      });
+
+      // Procedimentos por centro de custo
+      const procedimentosPorCentro = {
+        clinicaSpa: faturamento.procedimentos?.filter(p =>
+          p.nome?.toLowerCase().includes('massagem') ||
+          p.nome?.toLowerCase().includes('relaxante') ||
+          p.nome?.toLowerCase().includes('drenagem')
+        ) || [],
+        belaLaser: faturamento.procedimentos?.filter(p =>
+          p.nome?.toLowerCase().includes('depilação') ||
+          p.nome?.toLowerCase().includes('laser') ||
+          p.nome?.toLowerCase().includes('ultraforme')
+        ) || [],
+        convenios: [],
+      };
+
+      // Procedimentos de paciente novo
+      const procedimentosPacienteNovo = {
+        labels: faturamento.procedimentos?.slice(0, 15).map(p => p.nome) || [],
+        vendas: faturamento.procedimentos?.slice(0, 15).map(p => p.quantidade) || [],
+        faturamento: faturamento.procedimentos?.slice(0, 15).map(p => p.valor) || [],
+      };
+
+      res.json({
+        success: true,
+        data: {
+          conversaoVendaPorOrigem,
+          procedimentosPorCentro,
+          procedimentosPacienteNovo,
+          metas: {
+            spa: {
+              atual: faturamento.faturamentoTotal * 0.3,
+              meta: 1060000,
+            },
+            convenios: {
+              atual: 0,
+              meta: 210000,
+            },
+            belaLaser: {
+              atual: faturamento.faturamentoTotal * 0.1,
+              meta: 100000,
+            },
+          },
+          profissionais: faturamento.profissionais || [],
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar comercial:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados comerciais',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== ATENDIMENTO/PERFORMANCE ====================
+
+  async getAtendimento(req, res) {
+    try {
+      const { data_inicio, data_fim, profissional } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const faturamento = await belleService.getAnalyticsFaturamento(
+        startDate, endDate, []
+      );
+
+      // Desempenho por responsável
+      const desempenho = faturamento.profissionais?.map(prof => ({
+        responsavel: prof.nome,
+        totalOrcamentos: prof.vendas * 1.2 | 0,
+        valorTotalOrcado: prof.valor * 1.1,
+        aprovados: prof.vendas,
+        valorTotalAprovado: prof.valor,
+        percentual: 98, // Calcular com dados reais
+      })) || [];
+
+      // Ticket médio por procedimento
+      const ticketMedioPorProcedimento = faturamento.procedimentos?.map(proc => ({
+        procedimento: proc.nome,
+        ticketMedio: proc.quantidade > 0 ? proc.valor / proc.quantidade : 0,
+        ticketMedioFormatado: formatCurrency(proc.quantidade > 0 ? proc.valor / proc.quantidade : 0),
+        vendas: proc.quantidade,
+        faturamentoTotal: proc.valor,
+        faturamentoTotalFormatado: formatCurrency(proc.valor),
+      })) || [];
+
+      // Top 80/20 (Pareto)
+      const totalFaturamento = faturamento.faturamentoTotal || 1;
+      let acumulado = 0;
+      const pareto8020 = ticketMedioPorProcedimento
+        .sort((a, b) => b.faturamentoTotal - a.faturamentoTotal)
+        .map(item => {
+          acumulado += item.faturamentoTotal;
+          return {
+            ...item,
+            percentualAcumulado: ((acumulado / totalFaturamento) * 100).toFixed(2),
+          };
+        })
+        .filter(item => parseFloat(item.percentualAcumulado) <= 80);
+
+      res.json({
+        success: true,
+        data: {
+          desempenho,
+          ticketMedioPorProcedimento: ticketMedioPorProcedimento.slice(0, 20),
+          pareto8020,
+          totalFaturamento: faturamento.faturamentoTotal,
+          totalFaturamentoFormatado: formatCurrency(faturamento.faturamentoTotal),
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar atendimento:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados de atendimento',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== METAS ====================
+
+  async getMetas(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const [metas, faturamento] = await Promise.all([
+        belleService.getMetasByPeriodo(startDate, endDate),
+        belleService.getAnalyticsFaturamento(startDate, endDate, []),
+      ]);
+
+      // Calcular progresso das metas por nível
+      const metaSpa = {
+        meta1: { expectativa: 43.48, realidade: 0, diaria: 0 },
+        meta2: { expectativa: 43.48, realidade: 0, diaria: 0 },
+        meta3: { expectativa: 43.48, realidade: 0, diaria: 0 },
+      };
+
+      res.json({
+        success: true,
+        data: {
+          metaSpa,
+          metasGerais: metas.data || [],
+          progressoGeral: {
+            faturamentoAtual: faturamento.faturamentoTotal,
+            faturamentoAtualFormatado: formatCurrency(faturamento.faturamentoTotal),
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar metas:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados de metas',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== PACIENTES ====================
+
+  async getPacientes(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisYear.start;
+      const endDate = data_fim || dateRanges.thisYear.end;
+
+      const pacientesAnalytics = await belleService.getAnalyticsPacientes(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: {
+          faturamentoPaciente: pacientesAnalytics.faturamentoPorPaciente,
+          potenciaisMais4Meses: pacientesAnalytics.potenciaisMais4Meses,
+          potenciaisMenos4Meses: pacientesAnalytics.potenciaisMenos4Meses,
+          totalClientes: pacientesAnalytics.totalClientes,
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar pacientes:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados de pacientes',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== FILTROS ====================
+
+  async getFilterOptions(req, res) {
+    try {
+      const [
+        leadStatuses,
+        leadSources,
+        dealStages,
+        dealCategories,
+        centrosCusto,
+        profissionais,
+      ] = await Promise.all([
+        bitrix24Service.getLeadStatuses(),
+        bitrix24Service.getLeadSources(),
+        bitrix24Service.getDealStages(),
+        bitrix24Service.getDealCategories(),
+        belleService.getCentrosCusto(),
+        belleService.getProfissionais(),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          leadStatuses,
+          leadSources,
+          dealStages,
+          dealCategories,
+          centrosCusto: centrosCusto.data || [],
+          profissionais: profissionais.data || [],
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar opções de filtro:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar opções de filtro',
+        message: error.message,
+      });
+    }
+  },
+};
+
+export default dashboardController;

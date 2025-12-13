@@ -21,8 +21,8 @@ export function MetasPage() {
   }, [fetchMetas]);
 
   useEffect(() => {
-    if (data.metas) {
-      setMetas(data.metas.metaSpa);
+    if (data.metas?.metaSpa) {
+      setMetas({ spa: data.metas.metaSpa });
     }
   }, [data.metas]);
 

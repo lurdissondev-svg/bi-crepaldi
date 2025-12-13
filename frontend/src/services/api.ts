@@ -168,6 +168,24 @@ class ApiService {
     );
     return response.data.data;
   }
+
+  // Sync Status
+  async getSyncStatus(): Promise<{
+    isRunning: boolean;
+    lastSyncAt: string | null;
+    nextSyncAt: string | null;
+    lastSyncStatus: 'success' | 'partial' | 'error' | null;
+    intervalMinutes: number;
+  }> {
+    const response = await this.client.get<ApiResponse<{
+      isRunning: boolean;
+      lastSyncAt: string | null;
+      nextSyncAt: string | null;
+      lastSyncStatus: 'success' | 'partial' | 'error' | null;
+      intervalMinutes: number;
+    }>>('/dashboard/sync-status');
+    return response.data.data;
+  }
 }
 
 export const api = new ApiService();

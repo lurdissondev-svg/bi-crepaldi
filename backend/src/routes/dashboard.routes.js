@@ -20,4 +20,7 @@ router.get('/lead-sale-correlation', cacheMiddleware(cacheKey), dashboardControl
 // Opções de filtro
 router.get('/filtros', cacheMiddleware(cacheKey), dashboardController.getFilterOptions);
 
+// Status do sync (sem cache pois muda constantemente)
+router.get('/sync-status', dashboardController.getSyncStatus);
+
 export default router;

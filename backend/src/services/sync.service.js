@@ -16,6 +16,22 @@ class SyncService {
     this.isRunning = false;
     this.intervalId = null;
     this.syncQueue = [];
+    this.lastSyncAt = null;
+    this.nextSyncAt = null;
+    this.lastSyncStatus = null;
+  }
+
+  /**
+   * Retorna informações sobre o status da sincronização
+   */
+  getSyncStatus() {
+    return {
+      isRunning: this.isRunning,
+      lastSyncAt: this.lastSyncAt,
+      nextSyncAt: this.nextSyncAt,
+      lastSyncStatus: this.lastSyncStatus,
+      intervalMinutes: config.sync.intervalMinutes,
+    };
   }
 
   // ==================== CONTROLE DO JOB ====================
@@ -43,6 +59,14 @@ class SyncService {
   }
 
   /**
+   * Calcula o próximo horário de sync
+   */
+  calculateNextSyncAt() {
+    const intervalMs = config.sync.intervalMinutes * 60 * 1000;
+    return new Date(Date.now() + intervalMs);
+  }
+
+  /**
    * Para o job de sincronização
    */
   stop() {
@@ -64,30 +88,61 @@ class SyncService {
 
     this.isRunning = true;
     const timer = startTimer('Full Sync');
+    const syncStartTime = new Date();
 
     try {
       logger.info('=== Iniciando sincronização completa ===');
 
-      // Sync Bitrix24 (CRM)
-      await this.syncBitrixData();
+      // Sync Bitrix24 e Belle em paralelo para não bloquear um ao outro
+      const results = await Promise.allSettled([
+        this.syncBitrixData(),
+        this.syncBelleData(),
+      ]);
 
-      // Sync Belle Software (Financeiro)
-      await this.syncBelleData();
+      // Log resultados
+      let hasErrors = false;
+      if (results[0].status === 'rejected') {
+        logger.error('Erro no sync Bitrix24:', results[0].reason?.message);
+        hasErrors = true;
+      }
+      if (results[1].status === 'rejected') {
+        logger.error('Erro no sync Belle:', results[1].reason?.message);
+        hasErrors = true;
+      }
 
-      // Correlação Lead -> Venda
-      await this.runCorrelation();
+      // Correlação Lead -> Venda (só se ambos terminaram)
+      try {
+        await this.runCorrelation();
+      } catch (error) {
+        logger.error('Erro na correlação:', error.message);
+      }
 
       // Agregações
-      await this.updateAggregations();
+      try {
+        await this.updateAggregations();
+      } catch (error) {
+        logger.error('Erro nas agregações:', error.message);
+      }
 
       timer({ status: 'success' });
       logger.info('=== Sincronização completa finalizada ===');
 
+      // Atualiza status do sync
+      this.lastSyncAt = syncStartTime;
+      this.nextSyncAt = this.calculateNextSyncAt();
+      this.lastSyncStatus = hasErrors ? 'partial' : 'success';
+
     } catch (error) {
       logger.error('Erro na sincronização completa:', error);
       timer({ status: 'error', error: error.message });
+
+      // Atualiza status mesmo em caso de erro
+      this.lastSyncAt = syncStartTime;
+      this.nextSyncAt = this.calculateNextSyncAt();
+      this.lastSyncStatus = 'error';
     } finally {
       this.isRunning = false;
+      logger.info(`Próximo sync agendado para: ${this.nextSyncAt?.toLocaleString('pt-BR')}`);
     }
   }
 
@@ -340,55 +395,61 @@ class SyncService {
       const inicioMesAnterior = format(startOfMonth(subDays(hoje, 30)), 'yyyy-MM-dd');
       const fimMesAtual = format(endOfMonth(hoje), 'yyyy-MM-dd');
 
-      const dados = await belleService.getContasReceberTodos(inicioMesAnterior, fimMesAtual, 'lancamento');
+      // Busca por estabelecimento para ter o codestab em cada registro
+      const resultados = await belleService.getContasReceberTodosEstabelecimentos(
+        inicioMesAnterior, fimMesAtual, 'lancamento'
+      );
 
-      if (!Array.isArray(dados)) {
-        logger.warn('Contas a receber retornou formato inválido');
-        return;
-      }
-
-      const records = dados.map(conta => ({
-        cod_conta: parseInt(conta.cod_conta) || 0,
-        cod_estab: parseInt(conta.cod_estabelecimento) || 1,
-        cod_cliente: parseInt(conta.cod_cliente) || null,
-        cod_venda: parseInt(conta.cod_venda) || null,
-        valor_bruto: parseFloat(conta.valor_bruto) || 0,
-        valor_liquido: parseFloat(conta.valor_liquido) || 0,
-        valor_pago: parseFloat(conta.valor_pago) || 0,
-        cod_forma_pagamento: parseInt(conta.cod_forma_pagamento) || null,
-        nome_forma_pagamento: conta.nome_forma_pagamento || null,
-        dt_lancamento: this.parseBelleDate(conta.dt_lancamento),
-        dt_vencimento: this.parseBelleDate(conta.dt_vencimento),
-        dt_pagamento: this.parseBelleDate(conta.dt_pagamento),
-        confirmado: conta.confirmado || 'N',
-        status: conta.status || null,
-        raw_data: JSON.stringify(conta),
-        synced_at: new Date().toISOString(),
-      })).filter(r => r.cod_conta > 0);
-
-      // Agrupa por cod_estab para upsert
-      const uniqueRecords = this.deduplicateByKeys(records, ['cod_conta', 'cod_estab']);
-
+      let totalFetched = 0;
       let inserted = 0;
       let updated = 0;
 
-      // Insere em batches de 500
-      for (let i = 0; i < uniqueRecords.length; i += 500) {
-        const batch = uniqueRecords.slice(i, i + 500);
-        const result = await this.upsertContasReceber(batch);
-        inserted += result.inserted;
-        updated += result.updated;
+      for (const resultado of resultados) {
+        const dados = resultado.data || [];
+        totalFetched += dados.length;
+
+        if (!Array.isArray(dados) || dados.length === 0) continue;
+
+        const records = dados.map(conta => ({
+          cod_conta: parseInt(conta.cod_movimento) || 0, // API retorna cod_movimento
+          cod_estab: resultado.codestab, // Usa o codestab do resultado
+          cod_cliente: parseInt(conta.cod_cliente) || null,
+          cod_venda: parseInt(conta.id_venda_relacionada) || null, // API retorna id_venda_relacionada
+          valor_bruto: parseFloat(conta.valor_bruto) || 0,
+          valor_liquido: parseFloat(conta.valor_liquido) || 0,
+          valor_pago: parseFloat(conta.valor_pago) || 0,
+          cod_forma_pagamento: parseInt(conta.cod_forma_pagamento) || null,
+          nome_forma_pagamento: conta.nome_forma_pagamento || null,
+          dt_lancamento: this.parseBelleDate(conta.dt_lancamento),
+          dt_vencimento: this.parseBelleDate(conta.dt_vencimento),
+          dt_pagamento: this.parseBelleDate(conta.dt_pagamento),
+          confirmado: conta.confirmado || 'N',
+          status: conta.status || null,
+          raw_data: JSON.stringify(conta),
+          synced_at: new Date().toISOString(),
+        })).filter(r => r.cod_conta > 0);
+
+        // Agrupa por cod_conta + cod_estab para evitar duplicatas
+        const uniqueRecords = this.deduplicateByKeys(records, ['cod_conta', 'cod_estab']);
+
+        // Insere em batches de 500
+        for (let i = 0; i < uniqueRecords.length; i += 500) {
+          const batch = uniqueRecords.slice(i, i + 500);
+          const result = await this.upsertContasReceber(batch);
+          inserted += result.inserted;
+          updated += result.updated;
+        }
       }
 
       await this.finishSyncLog(logId, 'success', {
-        records_fetched: dados.length,
+        records_fetched: totalFetched,
         records_inserted: inserted,
         records_updated: updated,
         date_from: inicioMesAnterior,
         date_to: fimMesAtual,
       });
 
-      logger.info(`Contas a receber sincronizadas: ${dados.length} (${inserted} novos, ${updated} atualizados)`);
+      logger.info(`Contas a receber sincronizadas: ${totalFetched} (${inserted} novos, ${updated} atualizados)`);
     } catch (error) {
       await this.finishSyncLog(logId, 'error', {}, error.message);
       throw error;
@@ -400,10 +461,11 @@ class SyncService {
 
     try {
       const hoje = new Date();
-      const inicioMesAnterior = format(startOfMonth(subDays(hoje, 30)), 'yyyy-MM-dd');
-      const fimMesAtual = format(endOfMonth(hoje), 'yyyy-MM-dd');
+      // Período menor para vendas (últimos 14 dias) - API de vendas é mais lenta
+      const inicioSync = format(subDays(hoje, 14), 'yyyy-MM-dd');
+      const fimMesAtual = format(hoje, 'yyyy-MM-dd');
 
-      const resultados = await belleService.getVendasTodosEstabelecimentos(inicioMesAnterior, fimMesAtual);
+      const resultados = await belleService.getVendasTodosEstabelecimentos(inicioSync, fimMesAtual);
 
       let totalFetched = 0;
       let inserted = 0;
@@ -414,17 +476,17 @@ class SyncService {
         totalFetched += vendas.length;
 
         const records = vendas.map(venda => ({
-          cod_venda: parseInt(venda.cod_venda) || 0,
+          cod_venda: parseInt(venda.id_venda) || 0, // API retorna id_venda
           cod_estab: resultado.codestab,
           cod_cliente: parseInt(venda.cod_cliente) || null,
           valor_venda: parseFloat(venda.valor_venda) || 0,
           valor_desconto: parseFloat(venda.valor_desconto) || 0,
-          valor_liquido: parseFloat(venda.valor_liquido) || 0,
+          valor_liquido: parseFloat(venda.valor_liquido) || parseFloat(venda.valor_venda) || 0, // Usa valor_venda se valor_liquido não existir
           data_venda: venda.data_venda || null,
           cod_profissional: parseInt(venda.cod_profissional) || null,
           nome_profissional: venda.nome_profissional || null,
-          status: venda.status || null,
-          confirmado: venda.confirmado || 'N',
+          status: venda.itens_venda?.[0]?.status || null, // Status vem dos itens
+          confirmado: 'S', // Se veio na API, considera confirmado
           raw_data: JSON.stringify(venda),
           synced_at: new Date().toISOString(),
         })).filter(r => r.cod_venda > 0);
@@ -443,7 +505,7 @@ class SyncService {
         records_fetched: totalFetched,
         records_inserted: inserted,
         records_updated: updated,
-        date_from: inicioMesAnterior,
+        date_from: inicioSync,
         date_to: fimMesAtual,
       });
 

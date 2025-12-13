@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronDown, Check, X } from 'lucide-react';
+import { ChevronDown, Check, X, Calendar } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import type { FilterState, FilterOptions } from '../../types';
 
@@ -10,18 +10,16 @@ interface FilterBarProps {
   showProfissional?: boolean;
 }
 
-// Estabelecimentos padrão
 const defaultEstabelecimentos = [
   { id: '1', nome: 'Dermato' },
   { id: '2', nome: 'SPA' },
-  { id: '5', nome: 'Convênio' },
+  { id: '5', nome: 'Convenio' },
   { id: '10', nome: 'Drips' },
-  { id: '11', nome: 'Estética' },
+  { id: '11', nome: 'Estetica' },
   { id: '12', nome: 'Bela Laser' },
   { id: '14', nome: 'Nutrologia' },
 ];
 
-// Date presets inspirados no DataBox
 const datePresets = [
   {
     label: 'Hoje',
@@ -40,7 +38,7 @@ const datePresets = [
     }
   },
   {
-    label: 'Últimos 7 dias',
+    label: 'Ultimos 7 dias',
     getValue: () => {
       const end = new Date();
       const start = new Date();
@@ -52,7 +50,7 @@ const datePresets = [
     }
   },
   {
-    label: 'Últimos 30 dias',
+    label: 'Ultimos 30 dias',
     getValue: () => {
       const end = new Date();
       const start = new Date();
@@ -64,7 +62,7 @@ const datePresets = [
     }
   },
   {
-    label: 'Este mês',
+    label: 'Este mes',
     getValue: () => {
       const now = new Date();
       const start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -76,7 +74,7 @@ const datePresets = [
     }
   },
   {
-    label: 'Mês passado',
+    label: 'Mes passado',
     getValue: () => {
       const now = new Date();
       const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -110,7 +108,6 @@ export function FilterBar({
   const [activeDropdown, setActiveDropdown] = useState<'estabelecimento' | 'profissional' | 'date' | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Fechar dropdown ao clicar fora
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -124,7 +121,6 @@ export function FilterBar({
   const estabelecimentos = filterOptions?.centrosCusto || defaultEstabelecimentos;
   const profissionais = filterOptions?.profissionais || [];
 
-  // Handlers
   const handleEstabelecimentoToggle = (id: string) => {
     const newList = filters.centrosCusto.includes(id)
       ? filters.centrosCusto.filter(c => c !== id)
@@ -147,7 +143,6 @@ export function FilterBar({
     onFilterChange({ ...filters, [field]: value });
   };
 
-  // Labels
   const getEstabelecimentoLabel = () => {
     if (filters.centrosCusto.length === 0) return 'Todos';
     if (filters.centrosCusto.length === 1) {
@@ -162,14 +157,12 @@ export function FilterBar({
   };
 
   const getDateLabel = () => {
-    // Check if matches a preset
     for (const preset of datePresets) {
       const { start, end } = preset.getValue();
       if (filters.dataInicio === start && filters.dataFim === end) {
         return preset.label;
       }
     }
-    // Custom range
     const formatDate = (d: string) => {
       const [y, m, day] = d.split('-');
       return `${day}/${m}`;
@@ -198,15 +191,15 @@ export function FilterBar({
         <button
           onClick={() => setActiveDropdown(activeDropdown === 'estabelecimento' ? null : 'estabelecimento')}
           className={cn(
-            'inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-full border transition-all',
+            'inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-all duration-200',
             filters.centrosCusto.length > 0
-              ? 'bg-primary-500/20 border-primary-500/50 text-primary-300'
-              : 'bg-dark-card border-dark-border text-dark-text hover:border-dark-muted'
+              ? 'bg-[var(--color-accent-light)] border-[var(--color-accent)] text-[var(--color-accent)]'
+              : 'bg-[var(--color-bg-elevated)] border-[var(--color-border-primary)] text-[var(--color-text-primary)] hover:border-[var(--color-border-secondary)]'
           )}
         >
           <span>Estabelecimento</span>
           {filters.centrosCusto.length > 0 && (
-            <span className="px-1.5 py-0.5 text-xs bg-primary-500/30 rounded-full">
+            <span className="px-1.5 py-0.5 text-xs bg-[var(--color-accent)] text-white rounded-full">
               {filters.centrosCusto.length}
             </span>
           )}
@@ -217,17 +210,17 @@ export function FilterBar({
         </button>
 
         {activeDropdown === 'estabelecimento' && (
-          <div className="absolute top-full left-0 mt-1 w-56 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden">
-            <div className="p-2 border-b border-dark-border flex justify-between text-xs">
+          <div className="absolute top-full left-0 mt-2 w-56 bg-[var(--color-bg-elevated)] border border-[var(--color-border-primary)] rounded-xl shadow-lg z-50 overflow-hidden animate-scale-in">
+            <div className="p-2 border-b border-[var(--color-border-subtle)] flex justify-between text-xs">
               <button
                 onClick={() => onFilterChange({ ...filters, centrosCusto: estabelecimentos.map(e => e.id) })}
-                className="text-primary-400 hover:text-primary-300"
+                className="text-[var(--color-accent)] hover:underline"
               >
                 Selecionar todos
               </button>
               <button
                 onClick={() => onFilterChange({ ...filters, centrosCusto: [] })}
-                className="text-dark-muted hover:text-dark-text"
+                className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
               >
                 Limpar
               </button>
@@ -237,17 +230,17 @@ export function FilterBar({
                 <button
                   key={item.id}
                   onClick={() => handleEstabelecimentoToggle(item.id)}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-dark-border/50 transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-[var(--color-bg-hover)] transition-colors"
                 >
                   <div className={cn(
                     'w-4 h-4 rounded border flex items-center justify-center transition-colors',
                     filters.centrosCusto.includes(item.id)
-                      ? 'bg-primary-500 border-primary-500'
-                      : 'border-dark-muted'
+                      ? 'bg-[var(--color-accent)] border-[var(--color-accent)]'
+                      : 'border-[var(--color-border-secondary)]'
                   )}>
                     {filters.centrosCusto.includes(item.id) && <Check size={12} className="text-white" />}
                   </div>
-                  <span className="text-dark-text">{item.nome}</span>
+                  <span className="text-[var(--color-text-primary)]">{item.nome}</span>
                 </button>
               ))}
             </div>
@@ -259,9 +252,10 @@ export function FilterBar({
       <div className="relative">
         <button
           onClick={() => setActiveDropdown(activeDropdown === 'date' ? null : 'date')}
-          className="inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-full border bg-dark-card border-dark-border text-dark-text hover:border-dark-muted transition-all"
+          className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border bg-[var(--color-bg-elevated)] border-[var(--color-border-primary)] text-[var(--color-text-primary)] hover:border-[var(--color-border-secondary)] transition-all duration-200"
         >
-          <span className="text-primary-400">{getDateLabel()}</span>
+          <Calendar size={14} className="text-[var(--color-text-muted)]" />
+          <span className="text-[var(--color-accent)] font-medium">{getDateLabel()}</span>
           <ChevronDown size={14} className={cn(
             'transition-transform',
             activeDropdown === 'date' && 'rotate-180'
@@ -269,9 +263,8 @@ export function FilterBar({
         </button>
 
         {activeDropdown === 'date' && (
-          <div className="absolute top-full left-0 mt-1 w-80 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden">
-            {/* Presets */}
-            <div className="p-2 border-b border-dark-border">
+          <div className="absolute top-full left-0 mt-2 w-80 bg-[var(--color-bg-elevated)] border border-[var(--color-border-primary)] rounded-xl shadow-lg z-50 overflow-hidden animate-scale-in">
+            <div className="p-3 border-b border-[var(--color-border-subtle)]">
               <div className="grid grid-cols-2 gap-1">
                 {datePresets.map((preset) => {
                   const { start, end } = preset.getValue();
@@ -281,10 +274,10 @@ export function FilterBar({
                       key={preset.label}
                       onClick={() => handleDatePreset(preset)}
                       className={cn(
-                        'px-2 py-1.5 text-xs rounded transition-colors text-left',
+                        'px-3 py-2 text-xs rounded-lg transition-colors text-left',
                         isActive
-                          ? 'bg-primary-500/20 text-primary-300'
-                          : 'hover:bg-dark-border text-dark-text'
+                          ? 'bg-[var(--color-accent-light)] text-[var(--color-accent)] font-medium'
+                          : 'hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
                       )}
                     >
                       {preset.label}
@@ -293,21 +286,20 @@ export function FilterBar({
                 })}
               </div>
             </div>
-            {/* Custom Date Range */}
             <div className="p-3 space-y-2">
-              <p className="text-xs text-dark-muted uppercase tracking-wide">Personalizado</p>
+              <p className="text-xs text-[var(--color-text-muted)] uppercase tracking-wide font-medium">Personalizado</p>
               <div className="grid grid-cols-2 gap-2">
                 <input
                   type="date"
                   value={filters.dataInicio}
                   onChange={(e) => handleDateChange('dataInicio', e.target.value)}
-                  className="w-full px-2 py-1.5 text-sm bg-dark-bg border border-dark-border rounded text-dark-text focus:outline-none focus:border-primary-500"
+                  className="w-full px-2 py-2 text-sm bg-[var(--color-bg-tertiary)] border border-[var(--color-border-primary)] rounded-lg text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent-light)]"
                 />
                 <input
                   type="date"
                   value={filters.dataFim}
                   onChange={(e) => handleDateChange('dataFim', e.target.value)}
-                  className="w-full px-2 py-1.5 text-sm bg-dark-bg border border-dark-border rounded text-dark-text focus:outline-none focus:border-primary-500"
+                  className="w-full px-2 py-2 text-sm bg-[var(--color-bg-tertiary)] border border-[var(--color-border-primary)] rounded-lg text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent-light)]"
                 />
               </div>
             </div>
@@ -321,10 +313,10 @@ export function FilterBar({
           <button
             onClick={() => setActiveDropdown(activeDropdown === 'profissional' ? null : 'profissional')}
             className={cn(
-              'inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-full border transition-all',
+              'inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-all duration-200',
               filters.profissional
-                ? 'bg-primary-500/20 border-primary-500/50 text-primary-300'
-                : 'bg-dark-card border-dark-border text-dark-text hover:border-dark-muted'
+                ? 'bg-[var(--color-accent-light)] border-[var(--color-accent)] text-[var(--color-accent)]'
+                : 'bg-[var(--color-bg-elevated)] border-[var(--color-border-primary)] text-[var(--color-text-primary)] hover:border-[var(--color-border-secondary)]'
             )}
           >
             <span>Profissional</span>
@@ -340,18 +332,18 @@ export function FilterBar({
           </button>
 
           {activeDropdown === 'profissional' && (
-            <div className="absolute top-full left-0 mt-1 w-56 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden">
+            <div className="absolute top-full left-0 mt-2 w-56 bg-[var(--color-bg-elevated)] border border-[var(--color-border-primary)] rounded-xl shadow-lg z-50 overflow-hidden animate-scale-in">
               <div className="max-h-48 overflow-y-auto">
                 <button
                   onClick={() => handleProfissionalChange('')}
                   className={cn(
                     'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
-                    !filters.profissional ? 'bg-primary-500/10 text-primary-300' : 'hover:bg-dark-border/50 text-dark-text'
+                    !filters.profissional ? 'bg-[var(--color-accent-light)] text-[var(--color-accent)]' : 'hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
                   )}
                 >
                   <div className={cn(
                     'w-4 h-4 rounded-full border flex items-center justify-center',
-                    !filters.profissional ? 'bg-primary-500 border-primary-500' : 'border-dark-muted'
+                    !filters.profissional ? 'bg-[var(--color-accent)] border-[var(--color-accent)]' : 'border-[var(--color-border-secondary)]'
                   )}>
                     {!filters.profissional && <div className="w-2 h-2 bg-white rounded-full" />}
                   </div>
@@ -363,12 +355,12 @@ export function FilterBar({
                     onClick={() => handleProfissionalChange(item.id)}
                     className={cn(
                       'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
-                      filters.profissional === item.id ? 'bg-primary-500/10 text-primary-300' : 'hover:bg-dark-border/50 text-dark-text'
+                      filters.profissional === item.id ? 'bg-[var(--color-accent-light)] text-[var(--color-accent)]' : 'hover:bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]'
                     )}
                   >
                     <div className={cn(
                       'w-4 h-4 rounded-full border flex items-center justify-center',
-                      filters.profissional === item.id ? 'bg-primary-500 border-primary-500' : 'border-dark-muted'
+                      filters.profissional === item.id ? 'bg-[var(--color-accent)] border-[var(--color-accent)]' : 'border-[var(--color-border-secondary)]'
                     )}>
                       {filters.profissional === item.id && <div className="w-2 h-2 bg-white rounded-full" />}
                     </div>
@@ -376,8 +368,8 @@ export function FilterBar({
                   </button>
                 ))}
                 {profissionais.length === 0 && (
-                  <div className="px-3 py-4 text-center text-xs text-dark-muted">
-                    Nenhum profissional disponível
+                  <div className="px-3 py-4 text-center text-xs text-[var(--color-text-muted)]">
+                    Nenhum profissional disponivel
                   </div>
                 )}
               </div>
@@ -390,10 +382,10 @@ export function FilterBar({
       {hasFilters && (
         <button
           onClick={clearFilters}
-          className="inline-flex items-center gap-1 px-2 py-1.5 text-xs text-dark-muted hover:text-red-400 transition-colors"
+          className="inline-flex items-center gap-1 px-2 py-2 text-xs text-[var(--color-text-muted)] hover:text-red-500 transition-colors rounded-lg hover:bg-red-500/10"
         >
-          <X size={12} />
-          <span>Limpar</span>
+          <X size={14} />
+          <span>Limpar filtros</span>
         </button>
       )}
     </div>

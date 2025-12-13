@@ -1,6 +1,8 @@
 import bitrix24Service from '../services/bitrix24.service.js';
 import belleService from '../services/belle.service.js';
+import dashboardDBService from '../services/dashboard.db.service.js';
 import leadSaleCorrelator from '../services/leadSaleCorrelator.js';
+import syncService from '../services/sync.service.js';
 import { getDateRanges, formatCurrency, getDecade } from '../utils/dateUtils.js';
 import logger from '../utils/logger.js';
 
@@ -16,14 +18,20 @@ export const dashboardController = {
       const endDate = data_fim || dateRanges.thisMonth.end;
       const centrosCusto = centros_custo ? centros_custo.split(',') : [];
 
-      // Buscar dados em paralelo
+      const timer = Date.now();
+
+      // Buscar dados em paralelo - leads do banco (rápido), resto da API
       const [
         leadsAnalytics,
         dealsAnalytics,
         faturamentoAtual,
         faturamentoAnterior,
       ] = await Promise.all([
-        bitrix24Service.getLeadsAnalytics(startDate, endDate),
+        // Leads do banco de dados (muito mais rápido!)
+        dashboardDBService.getLeadsAnalytics(startDate, endDate).catch(err => {
+          logger.warn('[Resumo] Fallback leads para API:', err.message);
+          return bitrix24Service.getLeadsAnalytics(startDate, endDate);
+        }),
         bitrix24Service.getDealsAnalytics(startDate, endDate),
         belleService.getFaturamentoContasReceber(startDate, endDate, centrosCusto),
         belleService.getFaturamentoContasReceber(
@@ -32,6 +40,8 @@ export const dashboardController = {
           centrosCusto
         ),
       ]);
+
+      logger.info(`[Resumo] Dados carregados em ${Date.now() - timer}ms`);
 
       // Calcular métricas
       const faturamentoTotal = faturamentoAtual.faturamentoTotal || 0;
@@ -231,7 +241,19 @@ export const dashboardController = {
       const startDate = data_inicio || dateRanges.thisMonth.start;
       const endDate = data_fim || dateRanges.thisMonth.end;
 
-      const leadsAnalytics = await bitrix24Service.getLeadsAnalytics(startDate, endDate);
+      // Usar banco de dados como fonte primária (muito mais rápido!)
+      let leadsAnalytics;
+      const timer = Date.now();
+
+      try {
+        leadsAnalytics = await dashboardDBService.getLeadsAnalytics(startDate, endDate);
+        logger.info(`[Marketing] Dados do PostgreSQL em ${Date.now() - timer}ms - ${leadsAnalytics.total} leads`);
+      } catch (dbError) {
+        // Fallback para API se o banco falhar
+        logger.warn('[Marketing] Fallback para API Bitrix24:', dbError.message);
+        leadsAnalytics = await bitrix24Service.getLeadsAnalytics(startDate, endDate);
+        logger.info(`[Marketing] Dados da API em ${Date.now() - timer}ms`);
+      }
 
       // Horário de chegada dos leads
       const horarioChegada = leadsAnalytics.byHour.map(item => ({
@@ -363,24 +385,36 @@ export const dashboardController = {
       const startDate = data_inicio || dateRanges.thisMonth.start;
       const endDate = data_fim || dateRanges.thisMonth.end;
 
+      const timer = Date.now();
+
       const [leadsAnalytics, dealsAnalytics, faturamento] = await Promise.all([
-        bitrix24Service.getLeadsAnalytics(startDate, endDate),
+        // Leads do banco de dados (muito mais rápido!)
+        dashboardDBService.getLeadsAnalytics(startDate, endDate).catch(err => {
+          logger.warn('[Comercial] Fallback leads para API:', err.message);
+          return bitrix24Service.getLeadsAnalytics(startDate, endDate);
+        }),
         bitrix24Service.getDealsAnalytics(startDate, endDate),
         belleService.getAnalyticsFaturamento(startDate, endDate, []),
       ]);
+
+      logger.info(`[Comercial] Dados carregados em ${Date.now() - timer}ms`);
 
       // Conversão de venda por origem do lead (campo UF_CRM_1692640693814)
       const conversaoVendaPorOrigem = leadsAnalytics.byOrigemLead.map(origem => {
         // Buscar deals que vieram de leads com essa origem
         // Nota: deals não tem UF_CRM_1692640693814 diretamente, então usamos os leads correlacionados
-        const leadsFromOrigem = leadsAnalytics.rawLeads?.filter(
-          l => l.UF_CRM_1692640693814 === origem.id ||
-               (!l.UF_CRM_1692640693814 && origem.id === 'NAO_PREENCHIDO')
-        ) || [];
+        // Compatibilidade com banco (custom_fields.UF_CRM_1692640693814) e API (UF_CRM_1692640693814)
+        const leadsFromOrigem = leadsAnalytics.rawLeads?.filter(l => {
+          const origemId = l.UF_CRM_1692640693814 || l.custom_fields?.UF_CRM_1692640693814;
+          return origemId === origem.id || (!origemId && origem.id === 'NAO_PREENCHIDO');
+        }) || [];
 
         // Quantidade de leads convertidos desta origem
+        // Compatibilidade com banco (status_semantica) e API (STATUS_SEMANTIC_ID)
         const convertedLeads = leadsFromOrigem.filter(l =>
-          l.STATUS_ID === 'CONVERTED' || l.STATUS_SEMANTIC_ID === 'S'
+          l.STATUS_ID === 'CONVERTED' ||
+          l.STATUS_SEMANTIC_ID === 'S' ||
+          l.status_semantica === 'success'
         ).length;
 
         // Estimar valor baseado na média do ticket
@@ -704,6 +738,58 @@ export const dashboardController = {
       res.status(500).json({
         success: false,
         error: 'Erro ao buscar opções de filtro',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== SYNC STATUS ====================
+
+  async getSyncStatus(req, res) {
+    try {
+      const status = syncService.getSyncStatus();
+
+      // If in-memory state is empty, try to get from database
+      let lastSyncAt = status.lastSyncAt;
+      let nextSyncAt = status.nextSyncAt;
+      let lastSyncStatus = status.lastSyncStatus;
+      let isRunning = status.isRunning;
+
+      if (!lastSyncAt) {
+        try {
+          const dbStatus = await dashboardDBService.getLastSyncInfo();
+          if (dbStatus) {
+            lastSyncAt = dbStatus.lastSyncAt;
+            lastSyncStatus = dbStatus.lastSyncStatus;
+            isRunning = isRunning || dbStatus.hasRunningSyncs;
+            // Calculate next sync time based on last sync + interval
+            if (lastSyncAt && !nextSyncAt) {
+              const lastTime = new Date(lastSyncAt).getTime();
+              const intervalMs = (status.intervalMinutes || 15) * 60 * 1000;
+              nextSyncAt = new Date(lastTime + intervalMs);
+            }
+          }
+        } catch (dbErr) {
+          logger.debug('[Sync Status] Could not get DB fallback:', dbErr.message);
+        }
+      }
+
+      logger.debug('[Sync Status]', JSON.stringify({ isRunning, lastSyncAt, nextSyncAt, lastSyncStatus }));
+      res.json({
+        success: true,
+        data: {
+          isRunning: isRunning || false,
+          lastSyncAt: lastSyncAt || null,
+          nextSyncAt: nextSyncAt || null,
+          lastSyncStatus: lastSyncStatus || null,
+          intervalMinutes: status.intervalMinutes || 15,
+        },
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar status do sync:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar status do sync',
         message: error.message,
       });
     }

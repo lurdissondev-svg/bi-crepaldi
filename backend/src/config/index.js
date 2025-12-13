@@ -29,7 +29,7 @@ export const config = {
   },
 
   belle: {
-    apiUrl: process.env.BELLE_API_URL || 'https://belle.bellesoftware.com.br/api',
+    apiUrl: process.env.BELLE_API_URL || 'https://app.bellesoftware.com.br/api/release/controller/IntegracaoExterna/v1.0',
     token: process.env.BELLE_API_TOKEN,
     estabelecimentos: (process.env.BELLE_ESTABELECIMENTOS || '1,2,5,10,11,12,14').split(',').map(Number),
     // Mapeamento de estabelecimentos

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ThemeProvider } from './contexts/ThemeContext';
 import { ResumoPage } from './pages/ResumoPage';
 import { FaturamentoPage } from './pages/FaturamentoPage';
 import { MarketingPage } from './pages/MarketingPage';
@@ -14,21 +15,23 @@ import { MetaAdsConfigPage } from './pages/MetaAdsConfigPage';
 function App() {
   return (
     <ErrorBoundary>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<ResumoPage />} />
-            <Route path="faturamento" element={<FaturamentoPage />} />
-            <Route path="marketing" element={<MarketingPage />} />
-            <Route path="comercial" element={<ComercialPage />} />
-            <Route path="atendimento" element={<AtendimentoPage />} />
-            <Route path="administrativo" element={<AdministrativoPage />} />
-            <Route path="metas" element={<MetasPage />} />
-            <Route path="pacientes" element={<PacientesPage />} />
-            <Route path="config/meta-ads" element={<MetaAdsConfigPage />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <ThemeProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Layout />}>
+              <Route index element={<ResumoPage />} />
+              <Route path="faturamento" element={<FaturamentoPage />} />
+              <Route path="marketing" element={<MarketingPage />} />
+              <Route path="comercial" element={<ComercialPage />} />
+              <Route path="atendimento" element={<AtendimentoPage />} />
+              <Route path="administrativo" element={<AdministrativoPage />} />
+              <Route path="metas" element={<MetasPage />} />
+              <Route path="pacientes" element={<PacientesPage />} />
+              <Route path="config/meta-ads" element={<MetaAdsConfigPage />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </ThemeProvider>
     </ErrorBoundary>
   );
 }

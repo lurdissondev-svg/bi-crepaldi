@@ -1,76 +1,82 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { FilterBar } from '../components/filters/FilterBar';
 import { BarChartCard } from '../components/charts/BarChartCard';
 import { PieChartCard } from '../components/charts/PieChartCard';
+import { ConversionFunnel } from '../components/charts/ConversionFunnel';
+import { UTMAnalytics } from '../components/charts/UTMAnalytics';
+import { StatusDistribution } from '../components/charts/StatusDistribution';
 import { DataTable } from '../components/dashboard/DataTable';
 import { useDashboard } from '../hooks/useDashboard';
-import { formatPercentage } from '../utils/format';
 import { PageSkeleton } from '../components/ui/Skeleton';
-
-// Mock data
-const mockHorarioChegada = [
-  { name: '0:00', value: 52 },
-  { name: '1:00', value: 81 },
-  { name: '2:00', value: 34 },
-  { name: '3:00', value: 22 },
-  { name: '4:00', value: 16 },
-  { name: '5:00', value: 3 },
-  { name: '6:00', value: 4 },
-  { name: '7:00', value: 6 },
-  { name: '8:00', value: 27 },
-  { name: '9:00', value: 41 },
-  { name: '10:00', value: 95 },
-  { name: '11:00', value: 147 },
-  { name: '12:00', value: 195 },
-  { name: '13:00', value: 249 },
-  { name: '14:00', value: 212 },
-  { name: '15:00', value: 175 },
-  { name: '16:00', value: 177 },
-  { name: '17:00', value: 205 },
-  { name: '18:00', value: 177 },
-  { name: '19:00', value: 175 },
-  { name: '20:00', value: 245 },
-  { name: '21:00', value: 72 },
-  { name: '22:00', value: 60 },
-];
-
-const mockTaxaConversao = [
-  { origem_lead: '', leads: 2477, em_atendimento: 0, desqualificados: 0, retencao_futura: 0, agendou: 0, taxa_conversao: '0%' },
-  { origem_lead: 'Instagram - Perfil Bela Laser', leads: 1, em_atendimento: 0, desqualificados: 0, retencao_futura: 0, agendou: 0, taxa_conversao: '0%' },
-  { origem_lead: 'Iniciativa Interna', leads: 81, em_atendimento: 51, desqualificados: 0, retencao_futura: 0, agendou: 0, taxa_conversao: '0%' },
-  { origem_lead: 'Não identificado', leads: 30, em_atendimento: 0, desqualificados: 0, retencao_futura: 0, agendou: 0, taxa_conversao: '0%' },
-  { origem_lead: 'Instagram - Perfil Dra Natasha', leads: 1, em_atendimento: 0, desqualificados: 0, retencao_futura: 0, agendou: 0, taxa_conversao: '0%' },
-  { origem_lead: '3612', leads: 4, em_atendimento: 0, desqualificados: 0, retencao_futura: 0, agendou: 0, taxa_conversao: '0%' },
-];
-
-const mockTotalLeads = [
-  { name: 'Sem Preenchimento', value: 96.4102 },
-  { name: 'Iniciativa Interna', value: 3.3072 },
-  { name: 'Outro', value: 0.0827 },
-];
 
 export function MarketingPage() {
   const { data, loading, filters, setFilters, filterOptions, fetchMarketing } = useDashboard();
-
-  const [localData, setLocalData] = useState({
-    totalLeads: 2419,
-    leadsEmAtendimento: 81,
-    leadsDesqualificados: 0,
-  });
 
   useEffect(() => {
     fetchMarketing();
   }, [fetchMarketing]);
 
-  useEffect(() => {
-    if (data.marketing) {
-      setLocalData({
-        totalLeads: data.marketing.origemLead.totalLeads.total,
-        leadsEmAtendimento: data.marketing.leadsEmAtendimento.total,
-        leadsDesqualificados: data.marketing.leadsDesqualificados.total,
-      });
+  // Transform API data for charts - derived from real data
+  const horarioChegadaData = useMemo(() => {
+    if (!data.marketing?.horarioChegada) return [];
+    return data.marketing.horarioChegada.map(item => ({
+      name: item.hora,
+      value: item.leads,
+    }));
+  }, [data.marketing?.horarioChegada]);
+
+  const taxaConversaoData = useMemo(() => {
+    if (!data.marketing?.origemLead?.taxaConversaoPorOrigem) return [];
+    return data.marketing.origemLead.taxaConversaoPorOrigem.map(item => ({
+      origem_lead: item.origem || 'Sem Preenchimento',
+      leads: item.leads,
+      em_atendimento: item.emAtendimento,
+      desqualificados: item.desqualificados,
+      retencao_futura: item.retencaoFutura,
+      agendou: item.agendou,
+      taxa_conversao: item.taxaConversao,
+    }));
+  }, [data.marketing?.origemLead?.taxaConversaoPorOrigem]);
+
+  const totalLeadsData = useMemo(() => {
+    if (!data.marketing?.origemLead?.totalLeads) return [];
+    const { total, semPreenchimento, iniciativaInterna, outro } = data.marketing.origemLead.totalLeads;
+    if (total === 0) return [];
+
+    const result = [];
+    if (semPreenchimento > 0) {
+      result.push({ name: 'Sem Preenchimento', value: semPreenchimento });
     }
-  }, [data.marketing]);
+    if (iniciativaInterna > 0) {
+      result.push({ name: 'Iniciativa Interna', value: iniciativaInterna });
+    }
+    // Calculate "other" as total minus known categories
+    const outroValue = total - semPreenchimento - iniciativaInterna;
+    if (outroValue > 0) {
+      result.push({ name: 'Outro', value: outroValue });
+    }
+    return result;
+  }, [data.marketing?.origemLead?.totalLeads]);
+
+  const localData = useMemo(() => ({
+    totalLeads: data.marketing?.origemLead?.totalLeads?.total || 0,
+    leadsEmAtendimento: data.marketing?.leadsEmAtendimento?.total || 0,
+    leadsDesqualificados: data.marketing?.leadsDesqualificados?.total || 0,
+  }), [data.marketing]);
+
+  const conversionFunnelData = useMemo(() => {
+    return data.marketing?.conversionFunnel || [];
+  }, [data.marketing?.conversionFunnel]);
+
+  const utmData = useMemo(() => ({
+    bySource: data.marketing?.byUtmSource || [],
+    byMedium: data.marketing?.byUtmMedium || [],
+    byCampaign: data.marketing?.byUtmCampaign || [],
+  }), [data.marketing?.byUtmSource, data.marketing?.byUtmMedium, data.marketing?.byUtmCampaign]);
+
+  const statusDistributionData = useMemo(() => {
+    return data.marketing?.statusDistribution || [];
+  }, [data.marketing?.statusDistribution]);
 
   const tableColumns = [
     { key: 'origem_lead', header: 'Origem Lead', className: 'text-primary-400' },
@@ -114,14 +120,23 @@ export function MarketingPage() {
       />
 
       {/* Horário de Chegada dos Leads */}
-      <BarChartCard
-        title="Horário de chegada dos Leads"
-        data={mockHorarioChegada}
-        color="#60a5fa"
-        height={300}
-        formatYAxis="number"
-        showLabels={false}
-      />
+      {horarioChegadaData.length > 0 ? (
+        <BarChartCard
+          title="Horário de chegada dos Leads"
+          data={horarioChegadaData}
+          color="#60a5fa"
+          height={300}
+          formatYAxis="number"
+          showLabels={false}
+        />
+      ) : (
+        <div className="card">
+          <h3 className="card-header">Horário de chegada dos Leads</h3>
+          <div className="flex flex-col items-center justify-center h-64">
+            <p className="text-dark-muted text-sm">Nenhum dado encontrado para o período selecionado</p>
+          </div>
+        </div>
+      )}
 
       {/* Origem do Lead Section */}
       <div className="space-y-6">
@@ -131,23 +146,30 @@ export function MarketingPage() {
         <DataTable
           title="Taxa de Conversão por Origem"
           columns={tableColumns}
-          data={mockTaxaConversao}
+          data={taxaConversaoData}
           showRowCount
         />
 
         {/* Metrics Row */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Total de Leads Pie Chart */}
-          <PieChartCard
-            title="Total de Leads"
-            data={mockTotalLeads.map(item => ({
-              name: item.name,
-              value: (item.value / 100) * localData.totalLeads,
-            }))}
-            showTotal
-            totalLabel="TOTAL"
-            height={300}
-          />
+          {totalLeadsData.length > 0 ? (
+            <PieChartCard
+              title="Total de Leads"
+              data={totalLeadsData}
+              showTotal
+              totalLabel="TOTAL"
+              height={300}
+            />
+          ) : (
+            <div className="card">
+              <h3 className="card-header">Total de Leads</h3>
+              <div className="flex flex-col items-center justify-center h-64">
+                <span className="text-3xl font-bold text-dark-text">{localData.totalLeads}</span>
+                <span className="text-xs text-dark-muted">TOTAL</span>
+              </div>
+            </div>
+          )}
 
           {/* Leads em Atendimento */}
           <div className="card">
@@ -170,7 +192,7 @@ export function MarketingPage() {
                     stroke="#60a5fa"
                     strokeWidth="12"
                     fill="none"
-                    strokeDasharray={`${(localData.leadsEmAtendimento / localData.totalLeads) * 352} 352`}
+                    strokeDasharray={`${localData.totalLeads > 0 ? (localData.leadsEmAtendimento / localData.totalLeads) * 352 : 0} 352`}
                     strokeLinecap="round"
                   />
                 </svg>
@@ -186,15 +208,70 @@ export function MarketingPage() {
           <div className="card">
             <h3 className="card-header">Leads Desqualificados</h3>
             <div className="flex flex-col items-center justify-center h-64">
-              <div className="w-24 h-24 flex items-center justify-center">
-                <svg viewBox="0 0 24 24" className="w-16 h-16 text-dark-muted" fill="none" stroke="currentColor" strokeWidth="1">
-                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-                </svg>
-              </div>
-              <p className="text-dark-muted text-sm mt-4">Nenhum resultado!</p>
+              {localData.leadsDesqualificados > 0 ? (
+                <div className="relative w-32 h-32">
+                  <svg className="w-full h-full transform -rotate-90">
+                    <circle
+                      cx="64"
+                      cy="64"
+                      r="56"
+                      stroke="#334155"
+                      strokeWidth="12"
+                      fill="none"
+                    />
+                    <circle
+                      cx="64"
+                      cy="64"
+                      r="56"
+                      stroke="#ef4444"
+                      strokeWidth="12"
+                      fill="none"
+                      strokeDasharray={`${localData.totalLeads > 0 ? (localData.leadsDesqualificados / localData.totalLeads) * 352 : 0} 352`}
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <span className="text-3xl font-bold text-dark-text">{localData.leadsDesqualificados}</span>
+                    <span className="text-xs text-dark-muted">TOTAL</span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="w-24 h-24 flex items-center justify-center">
+                    <svg viewBox="0 0 24 24" className="w-16 h-16 text-dark-muted" fill="none" stroke="currentColor" strokeWidth="1">
+                      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                    </svg>
+                  </div>
+                  <p className="text-dark-muted text-sm mt-4">Nenhum resultado!</p>
+                </>
+              )}
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Funil de Conversão */}
+      <ConversionFunnel
+        data={conversionFunnelData}
+        title="Funil de Conversão de Leads"
+        showLabels
+        height={400}
+      />
+
+      {/* Análise de UTM e Status */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <UTMAnalytics
+          bySource={utmData.bySource}
+          byMedium={utmData.byMedium}
+          byCampaign={utmData.byCampaign}
+          title="Análise de Parâmetros UTM"
+        />
+
+        <StatusDistribution
+          data={statusDistributionData}
+          title="Distribuição de Status dos Leads"
+          showDaysInStatus
+        />
       </div>
 
     </div>

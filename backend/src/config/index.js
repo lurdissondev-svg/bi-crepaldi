@@ -5,6 +5,24 @@ export const config = {
   port: process.env.PORT || 3001,
   nodeEnv: process.env.NODE_ENV || 'development',
 
+  // PostgreSQL Database
+  database: {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT) || 5432,
+    name: process.env.DB_NAME || 'bi_crepaldi',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    poolSize: parseInt(process.env.DB_POOL_SIZE) || 10,
+  },
+
+  // Sincronização
+  sync: {
+    enabled: process.env.SYNC_ENABLED !== 'false',
+    intervalMinutes: parseInt(process.env.SYNC_INTERVAL_MINUTES) || 5,
+    retryAttempts: parseInt(process.env.SYNC_RETRY_ATTEMPTS) || 3,
+    retryDelayMs: parseInt(process.env.SYNC_RETRY_DELAY_MS) || 5000,
+  },
+
   bitrix24: {
     webhookUrl: process.env.BITRIX24_WEBHOOK_URL,
     domain: process.env.BITRIX24_DOMAIN,

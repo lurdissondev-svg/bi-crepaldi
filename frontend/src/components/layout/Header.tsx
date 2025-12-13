@@ -1,4 +1,5 @@
 import { Search, Bell, Plus, Settings, User } from 'lucide-react';
+import { StatusIndicator } from '../StatusIndicator';
 
 interface HeaderProps {
   title: string;
@@ -12,6 +13,9 @@ export function Header({ title }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-4">
+        {/* System Status */}
+        <StatusIndicator />
+
         {/* Search */}
         <div className="relative">
           <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-muted" />

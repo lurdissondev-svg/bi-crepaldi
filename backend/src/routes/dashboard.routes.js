@@ -15,6 +15,7 @@ router.get('/comercial', cacheMiddleware(cacheKey), dashboardController.getComer
 router.get('/atendimento', cacheMiddleware(cacheKey), dashboardController.getAtendimento);
 router.get('/metas', cacheMiddleware(cacheKey), dashboardController.getMetas);
 router.get('/pacientes', cacheMiddleware(cacheKey), dashboardController.getPacientes);
+router.get('/lead-sale-correlation', cacheMiddleware(cacheKey), dashboardController.getLeadSaleCorrelation);
 
 // Opções de filtro
 router.get('/filtros', cacheMiddleware(cacheKey), dashboardController.getFilterOptions);

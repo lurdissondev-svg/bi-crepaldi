@@ -1,4 +1,32 @@
-import logger from '../utils/logger.js';
+import logger, { logApiCall } from '../utils/logger.js';
+
+/**
+ * Request timing middleware - logs duration of all API requests
+ */
+export const requestTimer = (req, res, next) => {
+  const start = Date.now();
+
+  // Store original end function
+  const originalEnd = res.end;
+
+  // Override end to capture timing
+  res.end = function(...args) {
+    const duration = Date.now() - start;
+    const success = res.statusCode < 400;
+
+    logApiCall(
+      'API',
+      `${req.method} ${req.path}`,
+      duration,
+      success
+    );
+
+    // Call original end
+    return originalEnd.apply(this, args);
+  };
+
+  next();
+};
 
 export const errorHandler = (err, req, res, next) => {
   logger.error('Unhandled error:', {
@@ -28,4 +56,4 @@ export const notFoundHandler = (req, res) => {
   });
 };
 
-export default { errorHandler, notFoundHandler };
+export default { errorHandler, notFoundHandler, requestTimer };

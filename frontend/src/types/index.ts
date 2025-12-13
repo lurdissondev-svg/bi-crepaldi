@@ -99,6 +99,14 @@ export interface FaturamentoData {
   }>;
 }
 
+// Conversion Funnel Stage
+export interface FunnelStage {
+  stage: string;
+  count: number;
+  percentage: number;
+  conversionFromPrevious?: number;
+}
+
 // Dashboard Marketing
 export interface MarketingData {
   horarioChegada: Array<{
@@ -128,12 +136,29 @@ export interface MarketingData {
   leadsDesqualificados: {
     total: number;
   };
+  conversionFunnel?: FunnelStage[];
   byUtmSource: Array<{
     source: string;
     total: number;
     converted: number;
     disqualified: number;
-    campaigns: Record<string, { total: number; converted: number }>;
+    inProgress: number;
+    campaigns: Record<string, { total: number; converted: number; disqualified: number }>;
+  }>;
+  byUtmMedium: Array<{
+    medium: string;
+    total: number;
+    converted: number;
+    disqualified: number;
+    inProgress: number;
+  }>;
+  byUtmCampaign: Array<{
+    campaign: string;
+    total: number;
+    converted: number;
+    disqualified: number;
+    inProgress: number;
+    sources: Record<string, { total: number; converted: number }>;
   }>;
   bySource: Array<{
     id: string;
@@ -143,6 +168,13 @@ export interface MarketingData {
     disqualified: number;
     inProgress: number;
     value: number;
+  }>;
+  statusDistribution: Array<{
+    id: string;
+    name: string;
+    count: number;
+    semantic: string;
+    avgDaysInStatus: number;
   }>;
   conversionRate: string;
 }
@@ -249,6 +281,25 @@ export interface PacientesData {
     investimento: number;
   }>;
   totalClientes: number;
+}
+
+// Meta Ads Configuration
+export interface MetaAdsConfig {
+  appId: string;
+  appSecret: string;
+  accessToken: string;
+  adAccountId: string;
+  pixelId?: string;
+  status: 'pending' | 'configured' | 'error';
+  lastSync?: string;
+  errorMessage?: string;
+}
+
+export interface MetaAdsValidationResult {
+  valid: boolean;
+  message: string;
+  accountName?: string;
+  permissions?: string[];
 }
 
 // Filter Options

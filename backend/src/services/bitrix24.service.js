@@ -168,8 +168,35 @@ class Bitrix24Service {
       disqualified: [], // Desqualificados (falha)
     };
 
+    // Status distribution tracking
+    const statusDistribution = {};
+    const now = new Date();
+
     leads.forEach(lead => {
       const status = statusMap[lead.STATUS_ID];
+      const statusId = lead.STATUS_ID || 'UNKNOWN';
+      const statusName = status?.NAME || statusId;
+
+      // Track status distribution
+      if (!statusDistribution[statusId]) {
+        statusDistribution[statusId] = {
+          id: statusId,
+          name: statusName,
+          count: 0,
+          semantic: status?.EXTRA?.SEMANTICS || status?.STATUS_SEMANTIC_ID || 'P',
+          avgDaysInStatus: 0,
+          totalDaysInStatus: 0,
+        };
+      }
+      statusDistribution[statusId].count++;
+
+      // Calculate days in current status
+      if (lead.DATE_MODIFY) {
+        const lastModified = new Date(lead.DATE_MODIFY);
+        const daysInStatus = Math.floor((now - lastModified) / (1000 * 60 * 60 * 24));
+        statusDistribution[statusId].totalDaysInStatus += daysInStatus;
+      }
+
       if (!status) {
         categorized.new.push(lead);
         return;
@@ -188,6 +215,14 @@ class Bitrix24Service {
       } else {
         categorized.inProgress.push(lead);
       }
+    });
+
+    // Calculate average days in status
+    Object.values(statusDistribution).forEach(status => {
+      if (status.count > 0) {
+        status.avgDaysInStatus = Math.round(status.totalDaysInStatus / status.count);
+      }
+      delete status.totalDaysInStatus; // Remove internal tracking field
     });
 
     // Análise por origem (source)
@@ -225,38 +260,97 @@ class Bitrix24Service {
 
     // Análise por UTM Source
     const byUtmSource = {};
+    const byUtmMedium = {};
+    const byUtmCampaign = {};
+
     leads.forEach(lead => {
       const utmSource = lead.UTM_SOURCE || 'Sem UTM';
+      const utmMedium = lead.UTM_MEDIUM || 'Sem Medium';
+      const utmCampaign = lead.UTM_CAMPAIGN || 'Sem Campanha';
 
+      const status = statusMap[lead.STATUS_ID];
+      const semantic = status?.EXTRA?.SEMANTICS || status?.STATUS_SEMANTIC_ID;
+      const isConverted = semantic === 'S' || lead.STATUS_ID === 'CONVERTED';
+      const isDisqualified = semantic === 'F' || lead.STATUS_ID === 'JUNK';
+
+      // Análise por UTM Source
       if (!byUtmSource[utmSource]) {
         byUtmSource[utmSource] = {
           source: utmSource,
           total: 0,
           converted: 0,
           disqualified: 0,
+          inProgress: 0,
           campaigns: {},
         };
       }
 
       byUtmSource[utmSource].total++;
-
-      const status = statusMap[lead.STATUS_ID];
-      const semantic = status?.EXTRA?.SEMANTICS || status?.STATUS_SEMANTIC_ID;
-
-      if (semantic === 'S' || lead.STATUS_ID === 'CONVERTED') {
+      if (isConverted) {
         byUtmSource[utmSource].converted++;
-      } else if (semantic === 'F' || lead.STATUS_ID === 'JUNK') {
+      } else if (isDisqualified) {
         byUtmSource[utmSource].disqualified++;
+      } else {
+        byUtmSource[utmSource].inProgress++;
       }
 
-      // Análise por campanha
-      const campaign = lead.UTM_CAMPAIGN || 'Sem Campanha';
-      if (!byUtmSource[utmSource].campaigns[campaign]) {
-        byUtmSource[utmSource].campaigns[campaign] = { total: 0, converted: 0 };
+      // Análise por campanha dentro da fonte
+      if (!byUtmSource[utmSource].campaigns[utmCampaign]) {
+        byUtmSource[utmSource].campaigns[utmCampaign] = { total: 0, converted: 0, disqualified: 0 };
       }
-      byUtmSource[utmSource].campaigns[campaign].total++;
-      if (semantic === 'S' || lead.STATUS_ID === 'CONVERTED') {
-        byUtmSource[utmSource].campaigns[campaign].converted++;
+      byUtmSource[utmSource].campaigns[utmCampaign].total++;
+      if (isConverted) {
+        byUtmSource[utmSource].campaigns[utmCampaign].converted++;
+      } else if (isDisqualified) {
+        byUtmSource[utmSource].campaigns[utmCampaign].disqualified++;
+      }
+
+      // Análise por UTM Medium
+      if (!byUtmMedium[utmMedium]) {
+        byUtmMedium[utmMedium] = {
+          medium: utmMedium,
+          total: 0,
+          converted: 0,
+          disqualified: 0,
+          inProgress: 0,
+        };
+      }
+      byUtmMedium[utmMedium].total++;
+      if (isConverted) {
+        byUtmMedium[utmMedium].converted++;
+      } else if (isDisqualified) {
+        byUtmMedium[utmMedium].disqualified++;
+      } else {
+        byUtmMedium[utmMedium].inProgress++;
+      }
+
+      // Análise por UTM Campaign (independente de source)
+      if (!byUtmCampaign[utmCampaign]) {
+        byUtmCampaign[utmCampaign] = {
+          campaign: utmCampaign,
+          total: 0,
+          converted: 0,
+          disqualified: 0,
+          inProgress: 0,
+          sources: {},
+        };
+      }
+      byUtmCampaign[utmCampaign].total++;
+      if (isConverted) {
+        byUtmCampaign[utmCampaign].converted++;
+      } else if (isDisqualified) {
+        byUtmCampaign[utmCampaign].disqualified++;
+      } else {
+        byUtmCampaign[utmCampaign].inProgress++;
+      }
+
+      // Track sources within campaigns
+      if (!byUtmCampaign[utmCampaign].sources[utmSource]) {
+        byUtmCampaign[utmCampaign].sources[utmSource] = { total: 0, converted: 0 };
+      }
+      byUtmCampaign[utmCampaign].sources[utmSource].total++;
+      if (isConverted) {
+        byUtmCampaign[utmCampaign].sources[utmSource].converted++;
       }
     });
 
@@ -282,6 +376,9 @@ class Bitrix24Service {
         : 0,
       bySource: Object.values(bySource).sort((a, b) => b.total - a.total),
       byUtmSource: Object.values(byUtmSource).sort((a, b) => b.total - a.total),
+      byUtmMedium: Object.values(byUtmMedium).sort((a, b) => b.total - a.total),
+      byUtmCampaign: Object.values(byUtmCampaign).sort((a, b) => b.total - a.total),
+      statusDistribution: Object.values(statusDistribution).sort((a, b) => b.count - a.count),
       byHour,
       statuses,
       sources,

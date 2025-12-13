@@ -12,7 +12,7 @@ class BelleService {
 
     this.client = axios.create({
       baseURL: this.baseUrl,
-      timeout: 60000,
+      timeout: 300000, // 5 minutes para endpoints com muitos dados
       headers: {
         'Content-Type': 'application/json',
         'Authorization': this.token,

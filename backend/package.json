@@ -7,17 +7,20 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "migrate": "node src/database/scripts/migrate.js",
+    "sync": "node -e \"import('./src/services/sync.service.js').then(m => m.default.runFullSync().then(() => process.exit(0)))\"",
     "test": "jest"
   },
   "dependencies": {
     "axios": "^1.6.2",
     "cors": "^2.8.5",
+    "date-fns": "^2.30.0",
+    "date-fns-tz": "^2.0.0",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "node-cache": "^5.1.2",
-    "winston": "^3.11.0",
-    "date-fns": "^2.30.0",
-    "date-fns-tz": "^2.0.0"
+    "pg": "^8.16.3",
+    "winston": "^3.11.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

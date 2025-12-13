@@ -9,6 +9,7 @@ import {
   UserCheck,
   FolderOpen,
   ChevronRight,
+  Settings,
 } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { prefetchRoute } from '../../services/prefetch';
@@ -28,6 +29,10 @@ const navItems: NavItem[] = [
   { name: 'Administrativo Financeiro', path: '/administrativo', icon: <FolderOpen size={20} /> },
   { name: 'Quadro de Metas', path: '/metas', icon: <Target size={20} /> },
   { name: 'Pacientes', path: '/pacientes', icon: <Users size={20} /> },
+];
+
+const configItems: NavItem[] = [
+  { name: 'Meta Ads', path: '/config/meta-ads', icon: <Settings size={20} /> },
 ];
 
 interface SidebarProps {
@@ -67,6 +72,35 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       {/* Navigation */}
       <nav className="p-2 space-y-1">
         {navItems.map((item) => (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            onMouseEnter={() => prefetchRoute(item.path)}
+            className={({ isActive }) =>
+              cn(
+                'flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200',
+                isActive
+                  ? 'bg-primary-600/20 text-primary-400 border-l-2 border-primary-500'
+                  : 'text-dark-muted hover:bg-dark-border hover:text-dark-text'
+              )
+            }
+          >
+            {item.icon}
+            {isOpen && <span className="text-sm font-medium">{item.name}</span>}
+          </NavLink>
+        ))}
+
+        {/* Config Section Divider */}
+        <div className="pt-4 mt-4 border-t border-dark-border">
+          {isOpen && (
+            <span className="px-3 text-xs font-medium text-dark-muted uppercase tracking-wider">
+              Configurações
+            </span>
+          )}
+        </div>
+
+        {/* Config Items */}
+        {configItems.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}

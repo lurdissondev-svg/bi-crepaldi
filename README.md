@@ -50,10 +50,12 @@ BI CREPALDI/
 ### Integrações
 
 - **Bitrix24 CRM API**
-  - Leads com UTM tracking
+  - Leads com UTM tracking (Source, Medium, Campaign)
   - Deals e estágios de venda
-  - Status e conversões
+  - Status e conversões com semântica (Processo/Sucesso/Falha)
   - Fontes de origem
+  - Funil de conversão de leads
+  - Correlação lead-to-sale
 
 - **Belle Software API**
   - Faturamento e vendas
@@ -61,6 +63,12 @@ BI CREPALDI/
   - Profissionais
   - Pacientes/Clientes
   - Centros de custo
+
+- **Meta Ads API** (Configurável)
+  - Integração com Facebook/Instagram Ads
+  - Métricas de campanhas (impressões, cliques, conversões)
+  - Custo por lead e ROI
+  - Análise de performance por campanha
 
 ## Instalação
 
@@ -127,6 +135,25 @@ FRONTEND_URL=http://localhost:5173
 | GET | `/api/dashboard/metas` | Quadro de metas |
 | GET | `/api/dashboard/pacientes` | Análise de pacientes |
 | GET | `/api/dashboard/filtros` | Opções de filtros |
+| GET | `/api/dashboard/lead-sale-correlation` | Correlação lead-venda |
+
+### Meta Ads
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| GET | `/api/meta/config` | Obter configuração Meta Ads |
+| POST | `/api/meta/config` | Salvar configuração |
+| POST | `/api/meta/validate` | Validar credenciais |
+| GET | `/api/meta/insights` | Obter insights de campanhas |
+| GET | `/api/meta/campaigns` | Listar campanhas |
+| GET | `/api/meta/summary` | Resumo de métricas |
+
+### Health Check
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| GET | `/api/health` | Status básico do servidor |
+| GET | `/api/health/detailed` | Status detalhado com integrações |
 
 ### Parâmetros de Query
 
@@ -213,10 +240,83 @@ cd frontend && npm run build
 # Servir arquivos de dist/
 ```
 
+## Configuração do Meta Ads
+
+Para integrar com o Meta Ads (Facebook/Instagram), siga os passos:
+
+1. **Criar App no Meta for Developers**
+   - Acesse [developers.facebook.com/apps](https://developers.facebook.com/apps)
+   - Crie um novo app do tipo "Business"
+   - Anote o App ID e App Secret
+
+2. **Gerar Access Token**
+   - No Graph API Explorer, gere um token com as permissões:
+     - `ads_read`
+     - `ads_management`
+     - `read_insights`
+     - `business_management`
+   - Converta para token de longa duração (60 dias)
+
+3. **Configurar no Sistema**
+   - Acesse o menu "Configurações > Meta Ads"
+   - Preencha App ID, App Secret, Access Token e Ad Account ID
+   - Clique em "Testar Conexão" para validar
+   - Salve a configuração
+
+## Troubleshooting
+
+### Erros Comuns
+
+**API retornando 503 (Service Unavailable)**
+- O Bitrix24 possui rate limiting. Aguarde alguns segundos e tente novamente.
+- O sistema possui retry automático com backoff exponencial.
+
+**Dados de marketing vazios**
+- Verifique se há leads criados no período selecionado no Bitrix24.
+- Confirme que o webhook do Bitrix24 está configurado corretamente.
+
+**Erro de autenticação Belle Software**
+- Verifique as credenciais no arquivo `.env`.
+- Confirme que o Client ID e Secret estão corretos.
+
+**Meta Ads: Token inválido**
+- Tokens de acesso expiram após 60 dias.
+- Gere um novo token no Graph API Explorer.
+- Verifique se o App está em modo Live (não Development).
+
+**Dados financeiros inconsistentes**
+- O cache possui TTL de 5 minutos. Aguarde ou reinicie o backend.
+- Verifique os centros de custo selecionados nos filtros.
+
+### Verificando Status das Integrações
+
+Acesse `/api/health/detailed` para ver o status de todas as integrações:
+
+```json
+{
+  "status": "healthy",
+  "integrations": {
+    "bitrix24": { "status": "connected", "message": "15 status disponíveis" },
+    "belle": { "status": "connected", "message": "API disponível" },
+    "metaAds": { "status": "not_configured", "message": "Não configurado" }
+  }
+}
+```
+
+### Logs
+
+Os logs são salvos com Winston e podem ser encontrados no console do backend. Para debug mais detalhado:
+
+```bash
+# Executar com logs verbose
+DEBUG=* npm run dev
+```
+
 ## Fontes de Referência
 
 - [Bitrix24 REST API](https://apidocs.bitrix24.com/)
 - [Belle Software](https://www.bellesoftware.com.br/)
+- [Meta Marketing API](https://developers.facebook.com/docs/marketing-apis/)
 - [Recharts](https://recharts.org/)
 - [Tailwind CSS](https://tailwindcss.com/)
 

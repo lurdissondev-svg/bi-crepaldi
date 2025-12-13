@@ -10,6 +10,8 @@ import type {
   PacientesData,
   FilterOptions,
   FilterState,
+  MetaAdsConfig,
+  MetaAdsValidationResult,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -115,6 +117,56 @@ class ApiService {
   async healthCheck(): Promise<{ status: string; timestamp: string }> {
     const response = await this.client.get('/health');
     return response.data;
+  }
+
+  async getDetailedHealth(): Promise<{
+    status: string;
+    timestamp: string;
+    uptime: number;
+    integrations: {
+      bitrix24: { status: string; message: string };
+      belle: { status: string; message: string };
+      metaAds: { status: string; message: string };
+    };
+  }> {
+    const response = await this.client.get('/health/detailed');
+    return response.data;
+  }
+
+  // Meta Ads Configuration
+  async getMetaAdsConfig(): Promise<MetaAdsConfig | null> {
+    try {
+      const response = await this.client.get<ApiResponse<MetaAdsConfig>>('/meta/config');
+      return response.data.data;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveMetaAdsConfig(config: Partial<MetaAdsConfig>): Promise<MetaAdsConfig> {
+    const response = await this.client.post<ApiResponse<MetaAdsConfig>>('/meta/config', config);
+    return response.data.data;
+  }
+
+  async validateMetaAdsConfig(config: {
+    appId: string;
+    appSecret: string;
+    accessToken: string;
+    adAccountId: string;
+  }): Promise<MetaAdsValidationResult> {
+    const response = await this.client.post<ApiResponse<MetaAdsValidationResult>>(
+      '/meta/validate',
+      config
+    );
+    return response.data.data;
+  }
+
+  async getMetaAdsInsights(filters: Partial<FilterState> = {}): Promise<Record<string, unknown>> {
+    const response = await this.client.get<ApiResponse<Record<string, unknown>>>(
+      '/meta/insights',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
   }
 }
 

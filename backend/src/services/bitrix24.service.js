@@ -1,6 +1,35 @@
 import axios from 'axios';
+import NodeCache from 'node-cache';
 import config from '../config/index.js';
 import logger from '../utils/logger.js';
+
+// Mapeamento do campo "Origem do lead" (UF_CRM_1692640693814)
+const ORIGEM_LEAD_MAP = {
+  '2138': 'Facebook Ads',
+  '136': 'Google Ads',
+  '200': 'Site',
+  '610': 'Campanha',
+  '208': 'Indicação',
+  '3674': 'Instagram - Perfil Dra Kelly',
+  '3566': 'Instagram - Perfil Dra Natasha',
+  '3568': 'Instagram - Perfil Grupo Crepaldi',
+  '3570': 'Instagram - Perfil SPA',
+  '3572': 'Instagram - Perfil Convenios',
+  '3574': 'Instagram - Perfil Bela Laser',
+  '1788': 'Instagram Post',
+  '1790': 'Iniciativa do paciente',
+  '3612': 'Iniciativa Interna',
+  '7306': 'Agendamento Presencial',
+  '1016': 'Orgânico',
+  '7370': 'Remarketing SPA',
+  '7380': 'Remarketing Clinica Crepaldi',
+  '7382': 'SPA',
+  '634': 'Não identificado',
+  '7400': 'Grupo OFF estetica',
+  '7746': 'Instagram - Perfil Dr. Paulo',
+  '8192': 'Agendamento por Ligação',
+  '8484': 'Parceria',
+};
 
 class Bitrix24Service {
   constructor() {
@@ -12,6 +41,39 @@ class Bitrix24Service {
         'Content-Type': 'application/json',
       },
     });
+    this.origemLeadMap = ORIGEM_LEAD_MAP;
+
+    // Cache para chamadas de API - TTL de 3 minutos
+    this.cache = new NodeCache({
+      stdTTL: 180,
+      checkperiod: 60,
+      useClones: false
+    });
+
+    // Cache de chamadas em andamento para evitar duplicatas
+    this.pendingRequests = new Map();
+  }
+
+  // Gera chave de cache
+  getCacheKey(method, params = {}) {
+    const sortedParams = Object.keys(params)
+      .filter(k => k !== 'start') // Não incluir start na chave para paginação
+      .sort()
+      .map(k => `${k}=${JSON.stringify(params[k])}`)
+      .join('&');
+    return `bitrix:${method}:${sortedParams}`;
+  }
+
+  // Limpa cache
+  clearCache() {
+    this.cache.flushAll();
+    logger.info('[Bitrix24 Service] Cache limpo');
+  }
+
+  // Método para obter o nome da origem do lead pelo ID
+  getOrigemLeadName(origemId) {
+    if (!origemId) return 'Não preenchido';
+    return ORIGEM_LEAD_MAP[String(origemId)] || 'Não identificado';
   }
 
   async callMethod(method, params = {}) {
@@ -25,29 +87,56 @@ class Bitrix24Service {
   }
 
   async getAllPaginated(method, params = {}, maxItems = null) {
-    const allItems = [];
-    let start = 0;
-    const batchSize = 50;
+    const cacheKey = this.getCacheKey(method, { ...params, maxItems });
 
-    while (true) {
-      const response = await this.callMethod(method, { ...params, start });
-      const items = response.result || [];
-      allItems.push(...items);
-
-      if (maxItems && allItems.length >= maxItems) {
-        return allItems.slice(0, maxItems);
-      }
-
-      if (!response.next || items.length < batchSize) {
-        break;
-      }
-
-      start = response.next;
-      // Delay maior para evitar rate limiting (503)
-      await new Promise(resolve => setTimeout(resolve, 500));
+    // Verifica cache primeiro
+    const cached = this.cache.get(cacheKey);
+    if (cached !== undefined) {
+      logger.debug(`[Bitrix Cache HIT] ${cacheKey}`);
+      return cached;
     }
 
-    return allItems;
+    // Verifica se há requisição em andamento
+    if (this.pendingRequests.has(cacheKey)) {
+      logger.debug(`[Bitrix Dedup] Aguardando requisição existente: ${cacheKey}`);
+      return this.pendingRequests.get(cacheKey);
+    }
+
+    logger.debug(`[Bitrix Cache MISS] Buscando: ${cacheKey}`);
+
+    const requestPromise = (async () => {
+      const allItems = [];
+      let start = 0;
+      const batchSize = 50;
+
+      while (true) {
+        const response = await this.callMethod(method, { ...params, start });
+        const items = response.result || [];
+        allItems.push(...items);
+
+        if (maxItems && allItems.length >= maxItems) {
+          const result = allItems.slice(0, maxItems);
+          this.cache.set(cacheKey, result);
+          this.pendingRequests.delete(cacheKey);
+          return result;
+        }
+
+        if (!response.next || items.length < batchSize) {
+          break;
+        }
+
+        start = response.next;
+        // Delay para evitar rate limiting (503)
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      this.cache.set(cacheKey, allItems);
+      this.pendingRequests.delete(cacheKey);
+      return allItems;
+    })();
+
+    this.pendingRequests.set(cacheKey, requestPromise);
+    return requestPromise;
   }
 
   // ==================== LEADS ====================
@@ -225,7 +314,40 @@ class Bitrix24Service {
       delete status.totalDaysInStatus; // Remove internal tracking field
     });
 
-    // Análise por origem (source)
+    // Análise por origem do lead (campo UF_CRM_1692640693814)
+    const byOrigemLead = {};
+    leads.forEach(lead => {
+      const origemId = lead.UF_CRM_1692640693814 || 'NAO_PREENCHIDO';
+      const origemName = this.getOrigemLeadName(origemId === 'NAO_PREENCHIDO' ? null : origemId);
+
+      if (!byOrigemLead[origemId]) {
+        byOrigemLead[origemId] = {
+          id: origemId,
+          name: origemName,
+          total: 0,
+          converted: 0,
+          disqualified: 0,
+          inProgress: 0,
+          value: 0,
+        };
+      }
+
+      byOrigemLead[origemId].total++;
+      byOrigemLead[origemId].value += parseFloat(lead.OPPORTUNITY) || 0;
+
+      const status = statusMap[lead.STATUS_ID];
+      const semantic = status?.EXTRA?.SEMANTICS || status?.STATUS_SEMANTIC_ID;
+
+      if (semantic === 'S' || lead.STATUS_ID === 'CONVERTED') {
+        byOrigemLead[origemId].converted++;
+      } else if (semantic === 'F' || lead.STATUS_ID === 'JUNK') {
+        byOrigemLead[origemId].disqualified++;
+      } else {
+        byOrigemLead[origemId].inProgress++;
+      }
+    });
+
+    // Análise por SOURCE_ID legado (mantido para compatibilidade)
     const bySource = {};
     leads.forEach(lead => {
       const sourceId = lead.SOURCE_ID || 'UNKNOWN';
@@ -363,6 +485,58 @@ class Bitrix24Service {
       }
     });
 
+    // Heatmap: análise por dia da semana e hora
+    const heatmapData = [];
+    leads.forEach(lead => {
+      if (lead.DATE_CREATE) {
+        const date = new Date(lead.DATE_CREATE);
+        const dayOfWeek = date.getDay(); // 0 = domingo, 6 = sábado
+        const hour = date.getHours();
+        heatmapData.push({ hour, dayOfWeek, value: 1 });
+      }
+    });
+
+    // Agregar heatmap data
+    const heatmapAggregated = {};
+    heatmapData.forEach(item => {
+      const key = `${item.dayOfWeek}-${item.hour}`;
+      if (!heatmapAggregated[key]) {
+        heatmapAggregated[key] = { hour: item.hour, dayOfWeek: item.dayOfWeek, value: 0 };
+      }
+      heatmapAggregated[key].value++;
+    });
+
+    // Tempo médio de conversão (dias entre criação e conversão)
+    let totalConversionDays = 0;
+    let conversionCount = 0;
+    categorized.converted.forEach(lead => {
+      if (lead.DATE_CREATE && lead.DATE_CLOSED) {
+        const created = new Date(lead.DATE_CREATE);
+        const closed = new Date(lead.DATE_CLOSED);
+        const days = Math.floor((closed - created) / (1000 * 60 * 60 * 24));
+        if (days >= 0 && days < 365) { // Ignorar valores absurdos
+          totalConversionDays += days;
+          conversionCount++;
+        }
+      }
+    });
+    const avgConversionDays = conversionCount > 0 ? totalConversionDays / conversionCount : 0;
+
+    // Tempo médio em atendimento (leads não convertidos)
+    let totalInProgressDays = 0;
+    let inProgressCount = 0;
+    categorized.inProgress.forEach(lead => {
+      if (lead.DATE_CREATE) {
+        const created = new Date(lead.DATE_CREATE);
+        const days = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+        if (days >= 0 && days < 365) {
+          totalInProgressDays += days;
+          inProgressCount++;
+        }
+      }
+    });
+    const avgInProgressDays = inProgressCount > 0 ? totalInProgressDays / inProgressCount : 0;
+
     return {
       total: leads.length,
       categorized: {
@@ -374,14 +548,23 @@ class Bitrix24Service {
       conversionRate: leads.length > 0
         ? ((categorized.converted.length / leads.length) * 100).toFixed(2)
         : 0,
+      byOrigemLead: Object.values(byOrigemLead).sort((a, b) => b.total - a.total),
       bySource: Object.values(bySource).sort((a, b) => b.total - a.total),
       byUtmSource: Object.values(byUtmSource).sort((a, b) => b.total - a.total),
       byUtmMedium: Object.values(byUtmMedium).sort((a, b) => b.total - a.total),
       byUtmCampaign: Object.values(byUtmCampaign).sort((a, b) => b.total - a.total),
       statusDistribution: Object.values(statusDistribution).sort((a, b) => b.count - a.count),
       byHour,
+      heatmap: Object.values(heatmapAggregated),
+      metrics: {
+        avgConversionDays: Math.round(avgConversionDays * 10) / 10,
+        avgInProgressDays: Math.round(avgInProgressDays * 10) / 10,
+        totalConverted: categorized.converted.length,
+        totalDisqualified: categorized.disqualified.length,
+      },
       statuses,
       sources,
+      origemLeadMap: ORIGEM_LEAD_MAP,
       rawLeads: leads,
     };
   }

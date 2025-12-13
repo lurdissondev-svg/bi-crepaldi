@@ -5,6 +5,8 @@ import { PieChartCard } from '../components/charts/PieChartCard';
 import { ConversionFunnel } from '../components/charts/ConversionFunnel';
 import { UTMAnalytics } from '../components/charts/UTMAnalytics';
 import { StatusDistribution } from '../components/charts/StatusDistribution';
+import { HeatmapChart } from '../components/charts/HeatmapChart';
+import { KPICard } from '../components/charts/KPICard';
 import { DataTable } from '../components/dashboard/DataTable';
 import { useDashboard } from '../hooks/useDashboard';
 import { PageSkeleton } from '../components/ui/Skeleton';
@@ -78,6 +80,19 @@ export function MarketingPage() {
     return data.marketing?.statusDistribution || [];
   }, [data.marketing?.statusDistribution]);
 
+  const heatmapData = useMemo(() => {
+    return data.marketing?.heatmap || [];
+  }, [data.marketing?.heatmap]);
+
+  const metricsData = useMemo(() => {
+    return data.marketing?.metrics || {
+      avgConversionDays: 0,
+      avgInProgressDays: 0,
+      totalConverted: 0,
+      totalDisqualified: 0,
+    };
+  }, [data.marketing?.metrics]);
+
   const tableColumns = [
     { key: 'origem_lead', header: 'Origem Lead', className: 'text-primary-400' },
     { key: 'leads', header: 'Leads', className: 'text-primary-400 text-center', headerClassName: 'text-center' },
@@ -96,10 +111,6 @@ export function MarketingPage() {
           filters={filters}
           onFilterChange={setFilters}
           filterOptions={filterOptions}
-          showTipo
-          showFonte
-          showOrigem
-          showFaseLead
         />
         <PageSkeleton />
       </div>
@@ -113,10 +124,6 @@ export function MarketingPage() {
         filters={filters}
         onFilterChange={setFilters}
         filterOptions={filterOptions}
-        showTipo
-        showFonte
-        showOrigem
-        showFaseLead
       />
 
       {/* Horário de Chegada dos Leads */}
@@ -137,6 +144,13 @@ export function MarketingPage() {
           </div>
         </div>
       )}
+
+      {/* Heatmap de Chegada de Leads */}
+      <HeatmapChart
+        data={heatmapData}
+        title="Mapa de Calor - Chegada de Leads"
+        height={300}
+      />
 
       {/* Origem do Lead Section */}
       <div className="space-y-6">
@@ -248,6 +262,58 @@ export function MarketingPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* KPIs de Métricas */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KPICard
+          title="Tempo Médio de Conversão"
+          value={metricsData.avgConversionDays}
+          format="days"
+          color="blue"
+          subtitle="Do lead até agendamento"
+          icon={
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          }
+        />
+        <KPICard
+          title="Tempo Médio em Atendimento"
+          value={metricsData.avgInProgressDays}
+          format="days"
+          color="yellow"
+          subtitle="Leads em processo"
+          icon={
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          }
+        />
+        <KPICard
+          title="Leads Convertidos"
+          value={metricsData.totalConverted}
+          format="number"
+          color="green"
+          subtitle="Total no período"
+          icon={
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          }
+        />
+        <KPICard
+          title="Taxa de Conversão"
+          value={localData.totalLeads > 0 ? (metricsData.totalConverted / localData.totalLeads) * 100 : 0}
+          format="percentage"
+          color="purple"
+          subtitle="Convertidos / Total"
+          icon={
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+            </svg>
+          }
+        />
       </div>
 
       {/* Funil de Conversão */}

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import NodeCache from 'node-cache';
 import config from '../config/index.js';
 import logger from '../utils/logger.js';
 import { format, parse } from 'date-fns';
@@ -10,9 +11,19 @@ class BelleService {
     this.estabelecimentos = config.belle.estabelecimentos;
     this.estabelecimentosMap = config.belle.estabelecimentosMap;
 
+    // Cache para chamadas de API externas - TTL de 3 minutos
+    this.cache = new NodeCache({
+      stdTTL: 180,
+      checkperiod: 60,
+      useClones: false // Evita cópias desnecessárias para melhor performance
+    });
+
+    // Cache de chamadas em andamento para evitar duplicatas
+    this.pendingRequests = new Map();
+
     this.client = axios.create({
       baseURL: this.baseUrl,
-      timeout: 300000, // 5 minutes para endpoints com muitos dados
+      timeout: 60000, // Reduzido para 60 segundos - timeout mais agressivo
       headers: {
         'Content-Type': 'application/json',
         'Authorization': this.token,
@@ -38,6 +49,62 @@ class BelleService {
     );
   }
 
+  // Gera uma chave de cache baseada nos parâmetros
+  getCacheKey(endpoint, params = {}) {
+    const sortedParams = Object.keys(params)
+      .sort()
+      .map(k => `${k}=${params[k]}`)
+      .join('&');
+    return `belle:${endpoint}:${sortedParams}`;
+  }
+
+  // Faz requisição com cache e deduplicação de chamadas em andamento
+  async cachedRequest(endpoint, params = {}, options = {}) {
+    const cacheKey = this.getCacheKey(endpoint, params);
+
+    // Verifica cache primeiro
+    const cached = this.cache.get(cacheKey);
+    if (cached !== undefined) {
+      logger.debug(`[Cache HIT] ${cacheKey}`);
+      return cached;
+    }
+
+    // Verifica se já há uma requisição em andamento para essa chave
+    if (this.pendingRequests.has(cacheKey)) {
+      logger.debug(`[Dedup] Aguardando requisição existente: ${cacheKey}`);
+      return this.pendingRequests.get(cacheKey);
+    }
+
+    // Inicia nova requisição
+    logger.debug(`[Cache MISS] Buscando: ${cacheKey}`);
+
+    const requestPromise = this.client.get(endpoint, { params, ...options })
+      .then(response => {
+        const data = response.data || [];
+        // Salva no cache
+        this.cache.set(cacheKey, data);
+        // Remove da lista de pendentes
+        this.pendingRequests.delete(cacheKey);
+        return data;
+      })
+      .catch(error => {
+        // Remove da lista de pendentes em caso de erro
+        this.pendingRequests.delete(cacheKey);
+        throw error;
+      });
+
+    // Registra como pendente
+    this.pendingRequests.set(cacheKey, requestPromise);
+
+    return requestPromise;
+  }
+
+  // Limpa cache - útil para forçar refresh
+  clearCache() {
+    this.cache.flushAll();
+    logger.info('[Belle Service] Cache limpo');
+  }
+
   // Formata data para o padrão Belle (dd/mm/yyyy)
   formatDateBelle(dateStr) {
     if (!dateStr) return '';
@@ -45,8 +112,15 @@ class BelleService {
       // Se já estiver no formato dd/mm/yyyy, retorna
       if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) return dateStr;
 
-      // Se estiver em ISO ou outro formato, converte
-      const date = new Date(dateStr);
+      // Se estiver no formato yyyy-MM-dd (ISO), converte diretamente sem usar Date()
+      // para evitar problemas de timezone
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const [year, month, day] = dateStr.split('-');
+        return `${day}/${month}/${year}`;
+      }
+
+      // Outros formatos: usa date-fns parse para evitar problemas de timezone
+      const date = parse(dateStr, 'yyyy-MM-dd', new Date());
       return format(date, 'dd/MM/yyyy');
     } catch (e) {
       return dateStr;
@@ -114,15 +188,13 @@ class BelleService {
       const dtInicio = this.formatDateBelle(dataInicio);
       const dtFim = this.formatDateBelle(dataFim);
 
-      const response = await this.client.get('/vendas', {
-        params: {
-          estab: codEstab,
-          dtInicio,
-          dtFim,
-          ...params,
-        },
+      const data = await this.cachedRequest('/vendas', {
+        estab: codEstab,
+        dtInicio,
+        dtFim,
+        ...params,
       });
-      return { data: response.data || [], total: response.data?.length || 0 };
+      return { data: data || [], total: data?.length || 0 };
     } catch (error) {
       logger.error(`Erro ao buscar vendas (estab ${codEstab}):`, error.message);
       return { data: [], total: 0 };
@@ -134,15 +206,13 @@ class BelleService {
       const dtInicio = this.formatDateBelle(dataInicio);
       const dtFim = this.formatDateBelle(dataFim);
 
-      const response = await this.client.get('/vendas/detalhado', {
-        params: {
-          estab: codEstab,
-          dtInicio,
-          dtFim,
-          ...params,
-        },
+      const data = await this.cachedRequest('/vendas/detalhado', {
+        estab: codEstab,
+        dtInicio,
+        dtFim,
+        ...params,
       });
-      return { data: response.data || [], total: response.data?.length || 0 };
+      return { data: data || [], total: data?.length || 0 };
     } catch (error) {
       logger.error(`Erro ao buscar vendas detalhado (estab ${codEstab}):`, error.message);
       return { data: [], total: 0 };
@@ -171,15 +241,13 @@ class BelleService {
       const dtInicio = this.formatDateBelle(dataInicio);
       const dtFim = this.formatDateBelle(dataFim);
 
-      const response = await this.client.get('/contas_receber', {
-        params: {
-          estab: codEstab,
-          dtInicio,
-          dtFim,
-          tipoData,
-        },
+      const data = await this.cachedRequest('/contas_receber', {
+        estab: codEstab,
+        dtInicio,
+        dtFim,
+        tipoData,
       });
-      return response.data || [];
+      return data || [];
     } catch (error) {
       logger.error(`Erro ao buscar contas a receber (estab ${codEstab}):`, error.message);
       return [];
@@ -192,14 +260,12 @@ class BelleService {
       const dtInicio = this.formatDateBelle(dataInicio);
       const dtFim = this.formatDateBelle(dataFim);
 
-      const response = await this.client.get('/contas_receber', {
-        params: {
-          dtInicio,
-          dtFim,
-          tipoData,
-        },
+      const data = await this.cachedRequest('/contas_receber', {
+        dtInicio,
+        dtFim,
+        tipoData,
       });
-      return response.data || [];
+      return data || [];
     } catch (error) {
       logger.error(`Erro ao buscar todas as contas a receber:`, error.message);
       return [];
@@ -207,9 +273,12 @@ class BelleService {
   }
 
   // Calcula faturamento de TODAS as contas a receber (sem filtro de estab)
-  async getFaturamentoHoje(dataInicio, dataFim) {
+  // IMPORTANTE: Usa a data do FILTRO como referência, não a data interna do registro
+  async getFaturamentoHoje(dataHoje) {
     try {
-      const dados = await this.getContasReceberTodos(dataInicio, dataFim, 'lancamento');
+      // Busca contas a receber usando a data de hoje como filtro
+      // A API Belle retorna registros baseados na data do filtro, independente do dt_lancamento interno
+      const dados = await this.getContasReceberTodos(dataHoje, dataHoje, 'lancamento');
 
       let faturamentoTotal = 0;
       let quantidadeMovimentos = 0;
@@ -228,10 +297,11 @@ class BelleService {
       return {
         faturamentoTotal,
         quantidadeMovimentos,
+        dataReferencia: dataHoje,
       };
     } catch (error) {
       logger.error('Erro ao calcular faturamento de hoje:', error.message);
-      return { faturamentoTotal: 0, quantidadeMovimentos: 0 };
+      return { faturamentoTotal: 0, quantidadeMovimentos: 0, dataReferencia: dataHoje };
     }
   }
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Calendar, Filter, X, ChevronDown } from 'lucide-react';
+import { ChevronDown, Check, X } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import type { FilterState, FilterOptions } from '../../types';
 
@@ -7,82 +7,177 @@ interface FilterBarProps {
   filters: FilterState;
   onFilterChange: (filters: FilterState) => void;
   filterOptions?: FilterOptions | null;
-  showCentrosCusto?: boolean;
   showProfissional?: boolean;
-  showConfirmado?: boolean;
-  showTipo?: boolean;
-  showFonte?: boolean;
-  showOrigem?: boolean;
-  showFaseLead?: boolean;
 }
+
+// Estabelecimentos padrão
+const defaultEstabelecimentos = [
+  { id: '1', nome: 'Dermato' },
+  { id: '2', nome: 'SPA' },
+  { id: '5', nome: 'Convênio' },
+  { id: '10', nome: 'Drips' },
+  { id: '11', nome: 'Estética' },
+  { id: '12', nome: 'Bela Laser' },
+  { id: '14', nome: 'Nutrologia' },
+];
+
+// Date presets inspirados no DataBox
+const datePresets = [
+  {
+    label: 'Hoje',
+    getValue: () => {
+      const today = new Date().toISOString().split('T')[0];
+      return { start: today, end: today };
+    }
+  },
+  {
+    label: 'Ontem',
+    getValue: () => {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const date = yesterday.toISOString().split('T')[0];
+      return { start: date, end: date };
+    }
+  },
+  {
+    label: 'Últimos 7 dias',
+    getValue: () => {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - 6);
+      return {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0]
+      };
+    }
+  },
+  {
+    label: 'Últimos 30 dias',
+    getValue: () => {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - 29);
+      return {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0]
+      };
+    }
+  },
+  {
+    label: 'Este mês',
+    getValue: () => {
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      return {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0]
+      };
+    }
+  },
+  {
+    label: 'Mês passado',
+    getValue: () => {
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const end = new Date(now.getFullYear(), now.getMonth(), 0);
+      return {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0]
+      };
+    }
+  },
+  {
+    label: 'Este ano',
+    getValue: () => {
+      const now = new Date();
+      const start = new Date(now.getFullYear(), 0, 1);
+      const end = new Date(now.getFullYear(), 11, 31);
+      return {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0]
+      };
+    }
+  },
+];
 
 export function FilterBar({
   filters,
   onFilterChange,
   filterOptions,
-  showCentrosCusto = true,
-  showProfissional = false,
-  showConfirmado = false,
-  showTipo = false,
-  showFonte = false,
-  showOrigem = false,
-  showFaseLead = false,
+  showProfissional = true,
 }: FilterBarProps) {
-  const [showCentrosDropdown, setShowCentrosDropdown] = useState(false);
-  const [showEstabelecimentoDropdown, setShowEstabelecimentoDropdown] = useState(false);
-  const centrosRef = useRef<HTMLDivElement>(null);
-  const estabelecimentoRef = useRef<HTMLDivElement>(null);
+  const [activeDropdown, setActiveDropdown] = useState<'estabelecimento' | 'profissional' | 'date' | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Fechar dropdowns ao clicar fora
+  // Fechar dropdown ao clicar fora
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (centrosRef.current && !centrosRef.current.contains(event.target as Node)) {
-        setShowCentrosDropdown(false);
-      }
-      if (estabelecimentoRef.current && !estabelecimentoRef.current.contains(event.target as Node)) {
-        setShowEstabelecimentoDropdown(false);
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setActiveDropdown(null);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const presetDates = [
-    { label: 'Hoje', getValue: () => {
-      const today = new Date().toISOString().split('T')[0];
-      return { start: today, end: today };
-    }},
-    { label: 'Este mês', getValue: () => {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
-      return { start, end };
-    }},
-    { label: 'Mês passado', getValue: () => {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0];
-      const end = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
-      return { start, end };
-    }},
-    { label: 'Este ano', getValue: () => {
-      const now = new Date();
-      const start = new Date(now.getFullYear(), 0, 1).toISOString().split('T')[0];
-      const end = new Date(now.getFullYear(), 11, 31).toISOString().split('T')[0];
-      return { start, end };
-    }},
-  ];
+  const estabelecimentos = filterOptions?.centrosCusto || defaultEstabelecimentos;
+  const profissionais = filterOptions?.profissionais || [];
 
-  const handleDatePreset = (preset: typeof presetDates[0]) => {
+  // Handlers
+  const handleEstabelecimentoToggle = (id: string) => {
+    const newList = filters.centrosCusto.includes(id)
+      ? filters.centrosCusto.filter(c => c !== id)
+      : [...filters.centrosCusto, id];
+    onFilterChange({ ...filters, centrosCusto: newList });
+  };
+
+  const handleProfissionalChange = (id: string) => {
+    onFilterChange({ ...filters, profissional: id || undefined });
+    setActiveDropdown(null);
+  };
+
+  const handleDatePreset = (preset: typeof datePresets[0]) => {
     const { start, end } = preset.getValue();
     onFilterChange({ ...filters, dataInicio: start, dataFim: end });
+    setActiveDropdown(null);
   };
 
-  const handleCentroToggle = (centroId: string) => {
-    const newCentros = filters.centrosCusto.includes(centroId)
-      ? filters.centrosCusto.filter(id => id !== centroId)
-      : [...filters.centrosCusto, centroId];
-    onFilterChange({ ...filters, centrosCusto: newCentros });
+  const handleDateChange = (field: 'dataInicio' | 'dataFim', value: string) => {
+    onFilterChange({ ...filters, [field]: value });
   };
+
+  // Labels
+  const getEstabelecimentoLabel = () => {
+    if (filters.centrosCusto.length === 0) return 'Todos';
+    if (filters.centrosCusto.length === 1) {
+      return estabelecimentos.find(e => e.id === filters.centrosCusto[0])?.nome || '1 selecionado';
+    }
+    return `${filters.centrosCusto.length} selecionados`;
+  };
+
+  const getProfissionalLabel = () => {
+    if (!filters.profissional) return 'Todos';
+    return profissionais.find(p => p.id === filters.profissional)?.nome || 'Selecionado';
+  };
+
+  const getDateLabel = () => {
+    // Check if matches a preset
+    for (const preset of datePresets) {
+      const { start, end } = preset.getValue();
+      if (filters.dataInicio === start && filters.dataFim === end) {
+        return preset.label;
+      }
+    }
+    // Custom range
+    const formatDate = (d: string) => {
+      const [y, m, day] = d.split('-');
+      return `${day}/${m}`;
+    };
+    return `${formatDate(filters.dataInicio)} - ${formatDate(filters.dataFim)}`;
+  };
+
+  const hasFilters = filters.centrosCusto.length > 0 || filters.profissional;
 
   const clearFilters = () => {
     const now = new Date();
@@ -92,224 +187,215 @@ export function FilterBar({
       dataInicio: start,
       dataFim: end,
       centrosCusto: [],
+      profissional: undefined,
     });
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-3 mb-6">
-      {/* Centro de Custo */}
-      {showCentrosCusto && (
-        <div className="relative" ref={centrosRef}>
-          <button
-            onClick={() => setShowCentrosDropdown(!showCentrosDropdown)}
-            className={cn(
-              'filter-button',
-              filters.centrosCusto.length > 0 && 'filter-button-active'
-            )}
-          >
-            <Filter size={16} />
-            <span>Centro de Custo</span>
-            {filters.centrosCusto.length > 0 && (
-              <span className="px-1.5 py-0.5 text-xs bg-white/20 rounded-full">
-                {filters.centrosCusto.length} seleções
-              </span>
-            )}
-            <ChevronDown size={16} />
-          </button>
-
-          {showCentrosDropdown && (
-            <div className="absolute top-full left-0 mt-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50">
-              <div className="p-2 max-h-64 overflow-y-auto">
-                {(filterOptions?.centrosCusto || [
-                  { id: '1', nome: 'Dermato' },
-                  { id: '2', nome: 'SPA' },
-                  { id: '5', nome: 'Convênio' },
-                  { id: '10', nome: 'Drips' },
-                  { id: '11', nome: 'Estética' },
-                  { id: '12', nome: 'Bela Laser' },
-                  { id: '14', nome: 'Nutrologia' },
-                ]).map((centro) => (
-                  <label
-                    key={centro.id}
-                    className="flex items-center gap-2 px-3 py-2 hover:bg-dark-border rounded cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={filters.centrosCusto.includes(centro.id)}
-                      onChange={() => handleCentroToggle(centro.id)}
-                      className="rounded border-dark-border bg-dark-bg text-primary-500 focus:ring-primary-500"
-                    />
-                    <span className="text-sm">{centro.nome}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Data da Venda - Label dinâmico */}
-      <div className="flex items-center gap-2">
-        <div className="filter-button">
-          <Calendar size={16} />
-          <span className="text-primary-400">
-            {(() => {
-              const now = new Date();
-              const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-              const endOfThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
-              const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0];
-              const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
-              const startOfYear = new Date(now.getFullYear(), 0, 1).toISOString().split('T')[0];
-              const today = now.toISOString().split('T')[0];
-
-              if (filters.dataInicio === today && filters.dataFim === today) return 'Hoje';
-              if (filters.dataInicio === startOfThisMonth && filters.dataFim === endOfThisMonth) return 'Este mês';
-              if (filters.dataInicio === startOfLastMonth && filters.dataFim === endOfLastMonth) return 'Mês passado';
-              if (filters.dataInicio === startOfYear) return 'Este ano';
-              return `${filters.dataInicio} - ${filters.dataFim}`;
-            })()}
-          </span>
-          <X
-            size={14}
-            className="text-dark-muted hover:text-dark-text cursor-pointer"
-            onClick={clearFilters}
-          />
-        </div>
-      </div>
-
-      {/* Date Inputs */}
-      <div className="flex items-center gap-2">
-        <div className="filter-button">
-          <Calendar size={16} />
-          <span>Data início</span>
-          <input
-            type="date"
-            value={filters.dataInicio}
-            onChange={(e) => onFilterChange({ ...filters, dataInicio: e.target.value })}
-            className="bg-transparent border-none text-sm focus:outline-none w-28"
-          />
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <div className="filter-button">
-          <Calendar size={16} />
-          <span>Data fim</span>
-          <input
-            type="date"
-            value={filters.dataFim}
-            onChange={(e) => onFilterChange({ ...filters, dataFim: e.target.value })}
-            className="bg-transparent border-none text-sm focus:outline-none w-28"
-          />
-        </div>
-      </div>
-
-      {/* Profissional Filter */}
-      {showProfissional && (
-        <div className="filter-button">
-          <Filter size={16} />
-          <span>Profissional</span>
-          <ChevronDown size={16} />
-        </div>
-      )}
-
-      {/* Tipo Filter */}
-      {showTipo && (
-        <div className="filter-button">
-          <Filter size={16} />
-          <span>Tipo</span>
-          <ChevronDown size={16} />
-        </div>
-      )}
-
-      {/* Fonte Filter */}
-      {showFonte && (
-        <div className="filter-button">
-          <Filter size={16} />
-          <span>Fonte</span>
-          <ChevronDown size={16} />
-        </div>
-      )}
-
-      {/* Origem Filter */}
-      {showOrigem && (
-        <div className="filter-button">
-          <Filter size={16} />
-          <span>Origem</span>
-          <ChevronDown size={16} />
-        </div>
-      )}
-
-      {/* Fase do Lead Filter */}
-      {showFaseLead && (
-        <div className="filter-button">
-          <Filter size={16} />
-          <span>Fase do lead</span>
-          <ChevronDown size={16} />
-        </div>
-      )}
-
+    <div className="flex flex-wrap items-center gap-2" ref={dropdownRef}>
       {/* Estabelecimento Filter */}
-      <div className="relative" ref={estabelecimentoRef}>
+      <div className="relative">
         <button
-          onClick={() => setShowEstabelecimentoDropdown(!showEstabelecimentoDropdown)}
+          onClick={() => setActiveDropdown(activeDropdown === 'estabelecimento' ? null : 'estabelecimento')}
           className={cn(
-            'filter-button',
-            filters.centrosCusto.length > 0 && 'filter-button-active'
+            'inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-full border transition-all',
+            filters.centrosCusto.length > 0
+              ? 'bg-primary-500/20 border-primary-500/50 text-primary-300'
+              : 'bg-dark-card border-dark-border text-dark-text hover:border-dark-muted'
           )}
         >
-          <Filter size={16} />
           <span>Estabelecimento</span>
           {filters.centrosCusto.length > 0 && (
-            <span className="px-1.5 py-0.5 text-xs bg-white/20 rounded-full">
+            <span className="px-1.5 py-0.5 text-xs bg-primary-500/30 rounded-full">
               {filters.centrosCusto.length}
             </span>
           )}
-          <ChevronDown size={16} />
+          <ChevronDown size={14} className={cn(
+            'transition-transform',
+            activeDropdown === 'estabelecimento' && 'rotate-180'
+          )} />
         </button>
 
-        {showEstabelecimentoDropdown && (
-          <div className="absolute top-full left-0 mt-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50">
-            <div className="p-2 max-h-64 overflow-y-auto">
-              {(filterOptions?.centrosCusto || [
-                { id: '1', nome: 'Dermato' },
-                { id: '2', nome: 'SPA' },
-                { id: '5', nome: 'Convênio' },
-                { id: '10', nome: 'Drips' },
-                { id: '11', nome: 'Estética' },
-                { id: '12', nome: 'Bela Laser' },
-                { id: '14', nome: 'Nutrologia' },
-              ]).map((centro) => (
-                <label
-                  key={centro.id}
-                  className="flex items-center gap-2 px-3 py-2 hover:bg-dark-border rounded cursor-pointer"
+        {activeDropdown === 'estabelecimento' && (
+          <div className="absolute top-full left-0 mt-1 w-56 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden">
+            <div className="p-2 border-b border-dark-border flex justify-between text-xs">
+              <button
+                onClick={() => onFilterChange({ ...filters, centrosCusto: estabelecimentos.map(e => e.id) })}
+                className="text-primary-400 hover:text-primary-300"
+              >
+                Selecionar todos
+              </button>
+              <button
+                onClick={() => onFilterChange({ ...filters, centrosCusto: [] })}
+                className="text-dark-muted hover:text-dark-text"
+              >
+                Limpar
+              </button>
+            </div>
+            <div className="max-h-48 overflow-y-auto">
+              {estabelecimentos.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => handleEstabelecimentoToggle(item.id)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-dark-border/50 transition-colors"
                 >
-                  <input
-                    type="checkbox"
-                    checked={filters.centrosCusto.includes(centro.id)}
-                    onChange={() => handleCentroToggle(centro.id)}
-                    className="rounded border-dark-border bg-dark-bg text-primary-500 focus:ring-primary-500"
-                  />
-                  <span className="text-sm">{centro.nome}</span>
-                </label>
+                  <div className={cn(
+                    'w-4 h-4 rounded border flex items-center justify-center transition-colors',
+                    filters.centrosCusto.includes(item.id)
+                      ? 'bg-primary-500 border-primary-500'
+                      : 'border-dark-muted'
+                  )}>
+                    {filters.centrosCusto.includes(item.id) && <Check size={12} className="text-white" />}
+                  </div>
+                  <span className="text-dark-text">{item.nome}</span>
+                </button>
               ))}
             </div>
           </div>
         )}
       </div>
 
-      {/* Quick Date Presets */}
-      <div className="flex items-center gap-2 ml-auto">
-        {presetDates.map((preset) => (
-          <button
-            key={preset.label}
-            onClick={() => handleDatePreset(preset)}
-            className="px-3 py-1 text-xs text-dark-muted hover:text-dark-text hover:bg-dark-border rounded transition-colors"
-          >
-            {preset.label}
-          </button>
-        ))}
+      {/* Date Filter */}
+      <div className="relative">
+        <button
+          onClick={() => setActiveDropdown(activeDropdown === 'date' ? null : 'date')}
+          className="inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-full border bg-dark-card border-dark-border text-dark-text hover:border-dark-muted transition-all"
+        >
+          <span className="text-primary-400">{getDateLabel()}</span>
+          <ChevronDown size={14} className={cn(
+            'transition-transform',
+            activeDropdown === 'date' && 'rotate-180'
+          )} />
+        </button>
+
+        {activeDropdown === 'date' && (
+          <div className="absolute top-full left-0 mt-1 w-80 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden">
+            {/* Presets */}
+            <div className="p-2 border-b border-dark-border">
+              <div className="grid grid-cols-2 gap-1">
+                {datePresets.map((preset) => {
+                  const { start, end } = preset.getValue();
+                  const isActive = filters.dataInicio === start && filters.dataFim === end;
+                  return (
+                    <button
+                      key={preset.label}
+                      onClick={() => handleDatePreset(preset)}
+                      className={cn(
+                        'px-2 py-1.5 text-xs rounded transition-colors text-left',
+                        isActive
+                          ? 'bg-primary-500/20 text-primary-300'
+                          : 'hover:bg-dark-border text-dark-text'
+                      )}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {/* Custom Date Range */}
+            <div className="p-3 space-y-2">
+              <p className="text-xs text-dark-muted uppercase tracking-wide">Personalizado</p>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="date"
+                  value={filters.dataInicio}
+                  onChange={(e) => handleDateChange('dataInicio', e.target.value)}
+                  className="w-full px-2 py-1.5 text-sm bg-dark-bg border border-dark-border rounded text-dark-text focus:outline-none focus:border-primary-500"
+                />
+                <input
+                  type="date"
+                  value={filters.dataFim}
+                  onChange={(e) => handleDateChange('dataFim', e.target.value)}
+                  className="w-full px-2 py-1.5 text-sm bg-dark-bg border border-dark-border rounded text-dark-text focus:outline-none focus:border-primary-500"
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Profissional Filter */}
+      {showProfissional && (
+        <div className="relative">
+          <button
+            onClick={() => setActiveDropdown(activeDropdown === 'profissional' ? null : 'profissional')}
+            className={cn(
+              'inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-full border transition-all',
+              filters.profissional
+                ? 'bg-primary-500/20 border-primary-500/50 text-primary-300'
+                : 'bg-dark-card border-dark-border text-dark-text hover:border-dark-muted'
+            )}
+          >
+            <span>Profissional</span>
+            {filters.profissional && (
+              <span className="max-w-24 truncate text-xs opacity-80">
+                {getProfissionalLabel()}
+              </span>
+            )}
+            <ChevronDown size={14} className={cn(
+              'transition-transform',
+              activeDropdown === 'profissional' && 'rotate-180'
+            )} />
+          </button>
+
+          {activeDropdown === 'profissional' && (
+            <div className="absolute top-full left-0 mt-1 w-56 bg-dark-card border border-dark-border rounded-lg shadow-xl z-50 overflow-hidden">
+              <div className="max-h-48 overflow-y-auto">
+                <button
+                  onClick={() => handleProfissionalChange('')}
+                  className={cn(
+                    'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
+                    !filters.profissional ? 'bg-primary-500/10 text-primary-300' : 'hover:bg-dark-border/50 text-dark-text'
+                  )}
+                >
+                  <div className={cn(
+                    'w-4 h-4 rounded-full border flex items-center justify-center',
+                    !filters.profissional ? 'bg-primary-500 border-primary-500' : 'border-dark-muted'
+                  )}>
+                    {!filters.profissional && <div className="w-2 h-2 bg-white rounded-full" />}
+                  </div>
+                  <span>Todos os profissionais</span>
+                </button>
+                {profissionais.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => handleProfissionalChange(item.id)}
+                    className={cn(
+                      'w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
+                      filters.profissional === item.id ? 'bg-primary-500/10 text-primary-300' : 'hover:bg-dark-border/50 text-dark-text'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-4 h-4 rounded-full border flex items-center justify-center',
+                      filters.profissional === item.id ? 'bg-primary-500 border-primary-500' : 'border-dark-muted'
+                    )}>
+                      {filters.profissional === item.id && <div className="w-2 h-2 bg-white rounded-full" />}
+                    </div>
+                    <span>{item.nome}</span>
+                  </button>
+                ))}
+                {profissionais.length === 0 && (
+                  <div className="px-3 py-4 text-center text-xs text-dark-muted">
+                    Nenhum profissional disponível
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Clear Filters */}
+      {hasFilters && (
+        <button
+          onClick={clearFilters}
+          className="inline-flex items-center gap-1 px-2 py-1.5 text-xs text-dark-muted hover:text-red-400 transition-colors"
+        >
+          <X size={12} />
+          <span>Limpar</span>
+        </button>
+      )}
     </div>
   );
 }

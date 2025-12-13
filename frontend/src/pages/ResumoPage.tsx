@@ -1,12 +1,9 @@
 import { useEffect, useState } from 'react';
 import { FilterBar } from '../components/filters/FilterBar';
-import { MetricCard } from '../components/dashboard/MetricCard';
-import { StatCard } from '../components/dashboard/StatCard';
 import { AreaChartCard } from '../components/charts/AreaChartCard';
 import { BarChartCard } from '../components/charts/BarChartCard';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency } from '../utils/format';
-import { DollarSign, Users, UserPlus, TrendingUp } from 'lucide-react';
 
 // Dados padrão (fallback enquanto carrega)
 const defaultDesempenhoDezena = [
@@ -76,12 +73,12 @@ export function ResumoPage() {
       />
 
       {/* Main Metrics Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
         {/* Faturamento Card */}
-        <div className="card">
+        <div className="card xl:col-span-1">
           <h3 className="card-header">Faturamento</h3>
-          <div className="text-center">
-            <p className="metric-value-large text-dark-text">
+          <div className="flex flex-col items-center justify-center h-full py-4">
+            <p className="text-3xl font-bold text-dark-text">
               {formatCurrency(localData.faturamento.total)}
             </p>
             <p className="text-sm text-dark-muted mt-2">Faturamento Total</p>
@@ -89,50 +86,48 @@ export function ResumoPage() {
         </div>
 
         {/* Paciente Novo */}
-        <div className="card">
+        <div className="card xl:col-span-2">
           <h3 className="card-header">Paciente Novo</h3>
-          <div className="grid grid-cols-4 gap-4">
-            <StatCard
-              value={localData.pacienteNovo.leadsNovos}
-              label="Leads Novos"
-            />
-            <StatCard
-              value={localData.pacienteNovo.leadsAgendados}
-              label="Leads Novos Agendados"
-            />
-            <StatCard
-              value={localData.pacienteNovo.pacientesVenda}
-              label="Paciente Novo Venda"
-            />
-            <StatCard
-              value={formatCurrency(localData.pacienteNovo.ticketMedio)}
-              label="Ticket Médio - Paciente Novo"
-              valueClassName="text-2xl"
-            />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="text-center p-3">
+              <p className="text-3xl font-bold text-dark-text">{localData.pacienteNovo.leadsNovos}</p>
+              <p className="text-xs text-dark-muted mt-1">Leads Novos</p>
+            </div>
+            <div className="text-center p-3">
+              <p className="text-3xl font-bold text-dark-text">{localData.pacienteNovo.leadsAgendados}</p>
+              <p className="text-xs text-dark-muted mt-1">Leads Agendados</p>
+            </div>
+            <div className="text-center p-3">
+              <p className="text-3xl font-bold text-dark-text">{localData.pacienteNovo.pacientesVenda}</p>
+              <p className="text-xs text-dark-muted mt-1">Paciente Venda</p>
+            </div>
+            <div className="text-center p-3">
+              <p className="text-xl font-bold text-dark-text">{formatCurrency(localData.pacienteNovo.ticketMedio)}</p>
+              <p className="text-xs text-dark-muted mt-1">Ticket Médio</p>
+            </div>
           </div>
         </div>
 
         {/* Paciente Recorrente */}
-        <div className="card">
+        <div className="card xl:col-span-2">
           <h3 className="card-header">Paciente Recorrente</h3>
-          <div className="grid grid-cols-4 gap-4">
-            <StatCard
-              value={localData.pacienteRecorrente.leads}
-              label="Leads Recorrente"
-            />
-            <StatCard
-              value={localData.pacienteRecorrente.leadsAgendados}
-              label="Leads Recorrente Agendados"
-            />
-            <StatCard
-              value={localData.pacienteRecorrente.pacientes}
-              label="Paciente Recorrente"
-            />
-            <StatCard
-              value={formatCurrency(localData.pacienteRecorrente.ticketMedio)}
-              label="Ticket Médio - Paciente Recorrente"
-              valueClassName="text-2xl text-primary-400"
-            />
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="text-center p-3">
+              <p className="text-3xl font-bold text-dark-text">{localData.pacienteRecorrente.leads}</p>
+              <p className="text-xs text-dark-muted mt-1">Leads Recorrente</p>
+            </div>
+            <div className="text-center p-3">
+              <p className="text-3xl font-bold text-dark-text">{localData.pacienteRecorrente.leadsAgendados}</p>
+              <p className="text-xs text-dark-muted mt-1">Leads Agendados</p>
+            </div>
+            <div className="text-center p-3">
+              <p className="text-3xl font-bold text-dark-text">{localData.pacienteRecorrente.pacientes}</p>
+              <p className="text-xs text-dark-muted mt-1">Paciente Recorrente</p>
+            </div>
+            <div className="text-center p-3">
+              <p className="text-xl font-bold text-primary-400">{formatCurrency(localData.pacienteRecorrente.ticketMedio)}</p>
+              <p className="text-xs text-dark-muted mt-1">Ticket Médio</p>
+            </div>
           </div>
         </div>
       </div>

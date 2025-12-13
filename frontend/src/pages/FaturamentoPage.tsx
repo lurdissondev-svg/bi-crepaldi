@@ -108,8 +108,6 @@ export function FaturamentoPage() {
         filters={filters}
         onFilterChange={setFilters}
         filterOptions={filterOptions}
-        showProfissional
-        showConfirmado
       />
 
       {/* Main Metrics Row */}

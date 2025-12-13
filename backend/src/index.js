@@ -1,11 +1,40 @@
 import express from 'express';
 import cors from 'cors';
+import axios from 'axios';
 import config from './config/index.js';
 import routes from './routes/index.js';
 import { errorHandler, notFoundHandler, requestTimer } from './middleware/errorHandler.js';
 import logger from './utils/logger.js';
 import db from './database/index.js';
 import syncService from './services/sync.service.js';
+
+// Função para pré-carregar cache dos endpoints principais
+async function preloadCache() {
+  const baseUrl = `http://localhost:${config.port}/api/dashboard`;
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+
+  const endpoints = [
+    `/resumo?data_inicio=${startOfMonth}&data_fim=${endOfMonth}`,
+    `/faturamento?data_inicio=${startOfMonth}&data_fim=${endOfMonth}`,
+    `/marketing?data_inicio=${startOfMonth}&data_fim=${endOfMonth}`,
+    `/filtros`,
+  ];
+
+  logger.info('Pré-carregando cache dos endpoints principais...');
+
+  for (const endpoint of endpoints) {
+    try {
+      await axios.get(`${baseUrl}${endpoint}`, { timeout: 120000 });
+      logger.debug(`Cache pré-carregado: ${endpoint.split('?')[0]}`);
+    } catch (error) {
+      logger.warn(`Falha ao pré-carregar cache: ${endpoint.split('?')[0]} - ${error.message}`);
+    }
+  }
+
+  logger.info('Pré-carregamento de cache concluído!');
+}
 
 const app = express();
 
@@ -60,6 +89,11 @@ async function startServer() {
         syncService.start();
         logger.info(`Sincronização automática ativada (a cada ${config.sync.intervalMinutes} minutos)`);
       }
+
+      // Pré-carregar cache em background (não bloqueia a inicialização)
+      setTimeout(() => {
+        preloadCache().catch(err => logger.warn('Erro no preload:', err.message));
+      }, 2000);
 
       console.log(`
   ╔═══════════════════════════════════════════════════════════╗

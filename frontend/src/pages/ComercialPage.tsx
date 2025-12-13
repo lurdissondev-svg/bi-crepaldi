@@ -96,7 +96,6 @@ export function ComercialPage() {
           filters={filters}
           onFilterChange={setFilters}
           filterOptions={filterOptions}
-          showOrigem
         />
         <PageSkeleton />
       </div>
@@ -110,7 +109,6 @@ export function ComercialPage() {
         filters={filters}
         onFilterChange={setFilters}
         filterOptions={filterOptions}
-        showOrigem
       />
 
       {/* Conversão de Venda por Origem */}

@@ -365,21 +365,21 @@ class DashboardDBService {
       let query = `
         WITH period_sales AS (
           SELECT
-            v.cod_cliente,
-            v.valor_total,
-            v.data_venda,
-            v.cod_estab,
+            cr.cod_cliente,
+            cr.valor_liquido,
+            cr.dt_lancamento,
+            cr.cod_estab,
             ca.is_returning_customer,
             ca.primeira_compra_at
-          FROM vendas v
-          LEFT JOIN customer_analytics ca ON v.cod_cliente = ca.cliente_id
-          WHERE v.data_venda >= $1 AND v.data_venda <= $2
+          FROM contas_receber cr
+          LEFT JOIN customer_analytics ca ON cr.cod_cliente = ca.cliente_id
+          WHERE cr.dt_lancamento >= $1 AND cr.dt_lancamento <= $2 AND cr.valor_liquido > 0
       `;
 
       const params = [startDate, endDate];
 
       if (centrosCusto.length > 0) {
-        query += ` AND v.cod_estab = ANY($3)`;
+        query += ` AND cr.cod_estab = ANY($3)`;
         params.push(centrosCusto.map(Number));
       }
 
@@ -389,16 +389,16 @@ class DashboardDBService {
           SELECT
             -- Paciente novo: primeira compra no período OU não tem histórico anterior
             SUM(CASE
-              WHEN primeira_compra_at IS NULL THEN valor_total
-              WHEN primeira_compra_at >= $1::date THEN valor_total
+              WHEN primeira_compra_at IS NULL THEN valor_liquido
+              WHEN primeira_compra_at >= $1::date THEN valor_liquido
               ELSE 0
             END) AS new_patient_revenue,
             -- Paciente recorrente: já tinha compras antes do período
             SUM(CASE
-              WHEN primeira_compra_at IS NOT NULL AND primeira_compra_at < $1::date THEN valor_total
+              WHEN primeira_compra_at IS NOT NULL AND primeira_compra_at < $1::date THEN valor_liquido
               ELSE 0
             END) AS returning_patient_revenue,
-            SUM(valor_total) AS total_revenue,
+            SUM(valor_liquido) AS total_revenue,
             COUNT(DISTINCT CASE
               WHEN primeira_compra_at IS NULL OR primeira_compra_at >= $1::date THEN cod_cliente
             END) AS new_patient_count,

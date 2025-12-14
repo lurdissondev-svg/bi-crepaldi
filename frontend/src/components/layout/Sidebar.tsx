@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   Settings,
   Sparkles,
+  HelpCircle,
 } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { prefetchRoute } from '../../services/prefetch';
@@ -34,6 +35,7 @@ const navItems: NavItem[] = [
 
 const configItems: NavItem[] = [
   { name: 'Meta Ads', path: '/config/meta-ads', icon: <Settings size={20} /> },
+  { name: 'Como Funciona', path: '/como-funciona', icon: <HelpCircle size={20} /> },
 ];
 
 interface SidebarProps {

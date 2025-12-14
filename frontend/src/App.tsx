@@ -11,6 +11,7 @@ import { AdministrativoPage } from './pages/AdministrativoPage';
 import { MetasPage } from './pages/MetasPage';
 import { PacientesPage } from './pages/PacientesPage';
 import { MetaAdsConfigPage } from './pages/MetaAdsConfigPage';
+import { ComoFuncionaPage } from './pages/ComoFuncionaPage';
 
 function App() {
   return (
@@ -28,6 +29,7 @@ function App() {
               <Route path="metas" element={<MetasPage />} />
               <Route path="pacientes" element={<PacientesPage />} />
               <Route path="config/meta-ads" element={<MetaAdsConfigPage />} />
+              <Route path="como-funciona" element={<ComoFuncionaPage />} />
             </Route>
           </Routes>
         </BrowserRouter>

@@ -36,7 +36,7 @@ class Bitrix24Service {
     this.baseUrl = config.bitrix24.webhookUrl;
     this.client = axios.create({
       baseURL: this.baseUrl,
-      timeout: 30000,
+      timeout: 120000, // 2 minutos para suportar sync de muitos leads
       headers: {
         'Content-Type': 'application/json',
       },

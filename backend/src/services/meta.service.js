@@ -1,4 +1,5 @@
 import axios from 'axios';
+import db from '../database/index.js';
 import logger from '../utils/logger.js';
 
 const META_GRAPH_API_BASE = 'https://graph.facebook.com/v18.0';
@@ -7,15 +8,52 @@ class MetaAdsService {
   constructor() {
     this.config = null;
     this.client = null;
+    this.initialized = false;
   }
 
   /**
-   * Initialize the service with configuration
+   * Initialize service from database config
    */
-  setConfig(config) {
-    this.config = config;
+  async initialize() {
+    if (this.initialized) return;
 
-    if (config && config.accessToken) {
+    try {
+      const result = await db.query(`
+        SELECT * FROM meta_ads_config
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `);
+
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        // Note: In production, decrypt the secrets
+        this.config = {
+          appId: row.app_id,
+          appSecret: row.app_secret_encrypted, // Should be decrypted
+          accessToken: row.access_token_encrypted, // Should be decrypted
+          adAccountId: row.ad_account_id,
+          pixelId: row.pixel_id,
+          accountName: row.account_name,
+          status: row.status,
+          lastSync: row.last_sync_at,
+          errorMessage: row.error_message,
+        };
+
+        this.setupClient();
+        logger.info('Meta Ads service initialized from database');
+      }
+      this.initialized = true;
+    } catch (error) {
+      logger.warn('Meta Ads config table may not exist yet:', error.message);
+      this.initialized = true;
+    }
+  }
+
+  /**
+   * Setup axios client with access token
+   */
+  setupClient() {
+    if (this.config && this.config.accessToken) {
       this.client = axios.create({
         baseURL: META_GRAPH_API_BASE,
         timeout: 30000,
@@ -23,11 +61,49 @@ class MetaAdsService {
           'Content-Type': 'application/json',
         },
         params: {
-          access_token: config.accessToken,
+          access_token: this.config.accessToken,
         },
       });
     } else {
       this.client = null;
+    }
+  }
+
+  /**
+   * Initialize the service with configuration and persist to database
+   */
+  async setConfig(config) {
+    this.config = config;
+    this.setupClient();
+
+    // Persist to database
+    try {
+      await db.query(`
+        INSERT INTO meta_ads_config (
+          app_id, app_secret_encrypted, access_token_encrypted,
+          ad_account_id, pixel_id, account_name, status, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+        ON CONFLICT (id) DO UPDATE SET
+          app_id = EXCLUDED.app_id,
+          app_secret_encrypted = EXCLUDED.app_secret_encrypted,
+          access_token_encrypted = EXCLUDED.access_token_encrypted,
+          ad_account_id = EXCLUDED.ad_account_id,
+          pixel_id = EXCLUDED.pixel_id,
+          account_name = EXCLUDED.account_name,
+          status = EXCLUDED.status,
+          updated_at = CURRENT_TIMESTAMP
+      `, [
+        config.appId,
+        config.appSecret, // Should be encrypted in production
+        config.accessToken, // Should be encrypted in production
+        config.adAccountId,
+        config.pixelId || null,
+        config.accountName || null,
+        config.status || 'configured',
+      ]);
+      logger.info('Meta Ads config saved to database');
+    } catch (error) {
+      logger.warn('Could not persist Meta Ads config to database:', error.message);
     }
   }
 
@@ -342,6 +418,190 @@ class MetaAdsService {
     summary.costPerLead = summary.totalLeads > 0 ? summary.totalSpend / summary.totalLeads : null;
 
     return summary;
+  }
+
+  /**
+   * Sync Meta Ads spend data to marketing_spend table
+   */
+  async syncSpendData(startDate, endDate) {
+    if (!this.client || !this.config?.adAccountId) {
+      throw new Error('Meta Ads não está configurado');
+    }
+
+    try {
+      logger.info(`Syncing Meta Ads spend data from ${startDate} to ${endDate}`);
+
+      // Fetch insights at campaign and adset level
+      const insights = await this.getInsights({ start: startDate, end: endDate }, 'campaign');
+
+      let syncedCount = 0;
+
+      for (const insight of insights) {
+        try {
+          await db.query(`
+            INSERT INTO marketing_spend (
+              date, platform, campaign_id, campaign_name,
+              adset_id, adset_name, spend, impressions, clicks,
+              cpm, cpc, ctr, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
+            ON CONFLICT (date, platform, campaign_id, adset_id)
+            DO UPDATE SET
+              campaign_name = EXCLUDED.campaign_name,
+              adset_name = EXCLUDED.adset_name,
+              spend = EXCLUDED.spend,
+              impressions = EXCLUDED.impressions,
+              clicks = EXCLUDED.clicks,
+              cpm = EXCLUDED.cpm,
+              cpc = EXCLUDED.cpc,
+              ctr = EXCLUDED.ctr,
+              updated_at = CURRENT_TIMESTAMP
+          `, [
+            startDate, // Simplified: use period start date
+            'meta',
+            insight.campaignId,
+            insight.campaignName,
+            insight.adSetId || null,
+            insight.adSetName || null,
+            insight.spend,
+            insight.impressions,
+            insight.clicks,
+            insight.cpm,
+            insight.cpc,
+            insight.ctr / 100, // Convert percentage to decimal
+          ]);
+          syncedCount++;
+        } catch (err) {
+          logger.warn(`Failed to sync insight for campaign ${insight.campaignId}:`, err.message);
+        }
+      }
+
+      // Update last sync status
+      await db.query(`
+        UPDATE meta_ads_config
+        SET last_sync_at = CURRENT_TIMESTAMP,
+            last_sync_status = 'success'
+        WHERE ad_account_id = $1
+      `, [this.config.adAccountId]);
+
+      logger.info(`Meta Ads spend sync complete: ${syncedCount} records`);
+      return { syncedCount, totalInsights: insights.length };
+    } catch (error) {
+      logger.error('Error syncing Meta Ads spend:', error.message);
+
+      await db.query(`
+        UPDATE meta_ads_config
+        SET last_sync_at = CURRENT_TIMESTAMP,
+            last_sync_status = 'error',
+            error_message = $1
+        WHERE ad_account_id = $2
+      `, [error.message, this.config?.adAccountId]);
+
+      throw error;
+    }
+  }
+
+  /**
+   * Get marketing ROI metrics with lead correlation
+   */
+  async getMarketingROI(startDate, endDate) {
+    try {
+      // Get aggregated ROI from the view
+      const result = await db.query(`
+        SELECT
+          source,
+          SUM(total_leads) AS total_leads,
+          SUM(converted_leads) AS converted_leads,
+          SUM(total_revenue) AS total_revenue,
+          SUM(total_spend) AS total_spend,
+          CASE
+            WHEN SUM(total_spend) > 0
+            THEN ROUND((SUM(total_revenue) / SUM(total_spend))::numeric, 2)
+            ELSE NULL
+          END AS roas,
+          CASE
+            WHEN SUM(total_leads) > 0
+            THEN ROUND((SUM(total_spend) / SUM(total_leads))::numeric, 2)
+            ELSE NULL
+          END AS cpl,
+          CASE
+            WHEN SUM(total_leads) > 0
+            THEN ROUND((SUM(converted_leads)::decimal / SUM(total_leads) * 100)::numeric, 2)
+            ELSE 0
+          END AS conversion_rate
+        FROM vw_marketing_roi_detailed
+        WHERE lead_date >= $1 AND lead_date <= $2
+        GROUP BY source
+        ORDER BY total_leads DESC
+      `, [startDate, endDate]);
+
+      // Get totals
+      const totalsResult = await db.query(`
+        SELECT
+          SUM(total_leads) AS total_leads,
+          SUM(converted_leads) AS converted_leads,
+          SUM(total_revenue) AS total_revenue,
+          SUM(total_spend) AS total_spend
+        FROM vw_marketing_roi_detailed
+        WHERE lead_date >= $1 AND lead_date <= $2
+      `, [startDate, endDate]);
+
+      const totals = totalsResult.rows[0] || {};
+
+      return {
+        bySource: result.rows,
+        totals: {
+          totalLeads: parseInt(totals.total_leads) || 0,
+          convertedLeads: parseInt(totals.converted_leads) || 0,
+          totalRevenue: parseFloat(totals.total_revenue) || 0,
+          totalSpend: parseFloat(totals.total_spend) || 0,
+          roas: totals.total_spend > 0 ? (totals.total_revenue / totals.total_spend).toFixed(2) : null,
+          cpl: totals.total_leads > 0 ? (totals.total_spend / totals.total_leads).toFixed(2) : null,
+          conversionRate: totals.total_leads > 0
+            ? ((totals.converted_leads / totals.total_leads) * 100).toFixed(2)
+            : 0,
+        },
+      };
+    } catch (error) {
+      logger.error('Error getting marketing ROI:', error.message);
+      // Return empty data if views don't exist yet
+      return {
+        bySource: [],
+        totals: {
+          totalLeads: 0,
+          convertedLeads: 0,
+          totalRevenue: 0,
+          totalSpend: 0,
+          roas: null,
+          cpl: null,
+          conversionRate: 0,
+        },
+      };
+    }
+  }
+
+  /**
+   * Get daily marketing spend trend
+   */
+  async getSpendTrend(startDate, endDate) {
+    try {
+      const result = await db.query(`
+        SELECT
+          date,
+          platform,
+          SUM(spend) AS spend,
+          SUM(impressions) AS impressions,
+          SUM(clicks) AS clicks
+        FROM marketing_spend
+        WHERE date >= $1 AND date <= $2
+        GROUP BY date, platform
+        ORDER BY date
+      `, [startDate, endDate]);
+
+      return result.rows;
+    } catch (error) {
+      logger.error('Error getting spend trend:', error.message);
+      return [];
+    }
   }
 }
 

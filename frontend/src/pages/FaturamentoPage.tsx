@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { FilterBar } from '../components/filters/FilterBar';
-import { MetricCard } from '../components/dashboard/MetricCard';
 import { BarChartCard } from '../components/charts/BarChartCard';
 import { AreaChartCard } from '../components/charts/AreaChartCard';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency, formatPercentage } from '../utils/format';
 import { TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { RevalidatingIndicator } from '../components/ui/Skeleton';
 
 // Mock data
 const mockFaturamentoDiario = [
@@ -36,8 +36,12 @@ const mockFaturamentoAnual = [
 ];
 
 export function FaturamentoPage() {
-  const { data, loading, filters, setFilters, filterOptions, fetchFaturamento } = useDashboard();
+  const { data, loadingStates, revalidatingStates, filters, setFilters, filterOptions, fetchFaturamento } = useDashboard();
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+
+  // Use specific loading state for faturamento
+  const isLoading = loadingStates.faturamento;
+  const isRevalidating = revalidatingStates.faturamento;
 
   const handleRefresh = useCallback(() => {
     fetchFaturamento();
@@ -46,34 +50,28 @@ export function FaturamentoPage() {
 
   const [localData, setLocalData] = useState({
     mensal: {
-      valor: 244278.54,
-      variacao: -45.55,
-      mesAnterior: 448599.65,
-      pacientesNovosPercentual: 37.07,
+      valor: 0,
+      variacao: 0 as number | string,
+      mesAnterior: 0,
+      pacientesNovosPercentual: 0,
     },
     anual: {
-      valor: 4839938.38,
-      variacao: 17,
-      anoAnterior: 4136772.73,
-      pacientesNovosPercentual: 47.95,
+      valor: 0,
+      variacao: 0 as number | string,
+      anoAnterior: 0,
+      pacientesNovosPercentual: 0,
     },
     crescimentoMensal: {
-      mesPassadoAnoAnterior: 225499.00,
-      mesAtual: 244278.54,
-      percentual: 8.33,
+      mesPassadoAnoAnterior: 0,
+      mesAtual: 0,
+      percentual: 0,
     },
     crescimentoAnual: {
-      anoAnterior: 3939920.73,
-      anoAtual: 4839938.38,
-      percentual: 22.84,
+      anoAnterior: 0,
+      anoAtual: 0,
+      percentual: 0,
     },
   });
-
-  // Refetch quando filtros mudarem
-  useEffect(() => {
-    fetchFaturamento();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.dataInicio, filters.dataFim, JSON.stringify(filters.centrosCusto)]);
 
   // Auto-refresh a cada 5 minutos
   useEffect(() => {
@@ -95,6 +93,7 @@ export function FaturamentoPage() {
         crescimentoMensal: data.faturamento.crescimentoMensal,
         crescimentoAnual: data.faturamento.crescimentoAnual,
       });
+      setLastUpdate(new Date());
     }
   }, [data.faturamento]);
 
@@ -103,12 +102,17 @@ export function FaturamentoPage() {
       {/* Header */}
       <h2 className="text-lg font-semibold text-dark-text">FATURAMENTO CREPALDI</h2>
 
-      {/* Filters */}
-      <FilterBar
-        filters={filters}
-        onFilterChange={setFilters}
-        filterOptions={filterOptions}
-      />
+      {/* Filters with revalidating indicator */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex-1">
+          <FilterBar
+            filters={filters}
+            onFilterChange={setFilters}
+            filterOptions={filterOptions}
+          />
+        </div>
+        <RevalidatingIndicator isRevalidating={isRevalidating} />
+      </div>
 
       {/* Main Metrics Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -120,10 +124,10 @@ export function FaturamentoPage() {
               {formatCurrency(localData.mensal.valor)}
             </p>
             <p className="text-sm text-dark-muted mt-2">dez 2025</p>
-            <div className={`flex items-center justify-center gap-1 mt-2 ${localData.mensal.variacao >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-              {localData.mensal.variacao >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-              <span>{formatPercentage(Math.abs(localData.mensal.variacao))}</span>
-              <span className="text-dark-muted">vs. mês anterior: {formatCurrency(localData.mensal.mesAnterior)}</span>
+            <div className={`flex items-center justify-center gap-1 mt-2 ${Number(localData.mensal.variacao) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              {Number(localData.mensal.variacao) >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+              <span>{formatPercentage(Math.abs(Number(localData.mensal.variacao)))}</span>
+              <span className="text-dark-muted">vs. mes anterior: {formatCurrency(localData.mensal.mesAnterior)}</span>
             </div>
           </div>
 
@@ -132,7 +136,7 @@ export function FaturamentoPage() {
               {formatPercentage(localData.mensal.pacientesNovosPercentual)}
             </p>
             <p className="text-sm text-dark-muted mt-2">
-              % Dos pacientes novos em relação o faturamento total - <span className="text-primary-400">Mensal</span>
+              % Dos pacientes novos em relacao o faturamento total - <span className="text-primary-400">Mensal</span>
             </p>
           </div>
 
@@ -163,9 +167,9 @@ export function FaturamentoPage() {
               {formatCurrency(localData.anual.valor)}
             </p>
             <p className="text-sm text-dark-muted mt-2">2025</p>
-            <div className={`flex items-center justify-center gap-1 mt-2 ${localData.anual.variacao >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-              {localData.anual.variacao >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-              <span>{formatPercentage(Math.abs(localData.anual.variacao))}</span>
+            <div className={`flex items-center justify-center gap-1 mt-2 ${Number(localData.anual.variacao) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              {Number(localData.anual.variacao) >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+              <span>{formatPercentage(Math.abs(Number(localData.anual.variacao)))}</span>
               <span className="text-dark-muted">vs. ano anterior: {formatCurrency(localData.anual.anoAnterior)}</span>
             </div>
           </div>
@@ -175,7 +179,7 @@ export function FaturamentoPage() {
               {formatPercentage(localData.anual.pacientesNovosPercentual)}
             </p>
             <p className="text-sm text-dark-muted mt-2">
-              % Dos pacientes novos em relação o faturamento total - <span className="text-primary-400">Anual</span>
+              % Dos pacientes novos em relacao o faturamento total - <span className="text-primary-400">Anual</span>
             </p>
           </div>
 
@@ -207,11 +211,11 @@ export function FaturamentoPage() {
           </div>
           <button
             onClick={handleRefresh}
-            disabled={loading}
+            disabled={isLoading}
             className="flex items-center gap-1 text-xs text-primary-400 hover:text-primary-300 transition-colors disabled:opacity-50"
           >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            {loading ? 'Atualizando...' : 'Atualizar'}
+            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+            {isLoading ? 'Atualizando...' : 'Atualizar'}
           </button>
         </div>
         <div className="text-center py-8">
@@ -232,7 +236,7 @@ export function FaturamentoPage() {
 
       {/* Charts */}
       <BarChartCard
-        title="Faturamento Diário"
+        title="Faturamento Diario"
         data={data.faturamento?.faturamentoDiario?.map(item => ({
           name: item.data,
           value: item.valor,
@@ -252,15 +256,6 @@ export function FaturamentoPage() {
         formatYAxis="currency"
         height={350}
       />
-
-      {loading && (
-        <div className="fixed inset-0 bg-dark-bg/50 flex items-center justify-center z-50">
-          <div className="bg-dark-card p-6 rounded-xl shadow-xl">
-            <div className="animate-spin w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full mx-auto" />
-            <p className="text-dark-muted mt-3">Carregando dados...</p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

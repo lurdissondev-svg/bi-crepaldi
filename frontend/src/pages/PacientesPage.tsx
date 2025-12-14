@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react';
-import { FilterBar } from '../components/filters/FilterBar';
 import { DataTable } from '../components/dashboard/DataTable';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency } from '../utils/format';
-import { PageSkeleton } from '../components/ui/Skeleton';
+import { PageSkeleton, RevalidatingIndicator } from '../components/ui/Skeleton';
 
 // Mock data
 const mockFaturamentoPaciente = [
@@ -51,18 +49,18 @@ const mockPotenciaisMais4Meses = [
 ];
 
 export function PacientesPage() {
-  const { data, loading, filters, setFilters, filterOptions, fetchPacientes } = useDashboard();
+  const { data, loadingStates, revalidatingStates } = useDashboard();
 
-  useEffect(() => {
-    fetchPacientes();
-  }, [fetchPacientes]);
+  // Use specific loading state for pacientes
+  const isLoading = loadingStates.pacientes;
+  const isRevalidating = revalidatingStates.pacientes;
 
   const faturamentoColumns = [
     { key: 'cliente', header: 'Cliente', className: 'text-primary-400' },
     {
       key: 'investimento',
       header: 'Investimento (R$)',
-      render: (v: number) => formatCurrency(v),
+      render: (v: string | number) => formatCurrency(Number(v)),
       className: 'text-primary-400 text-right',
       headerClassName: 'text-right',
     },
@@ -70,18 +68,18 @@ export function PacientesPage() {
 
   const potenciaisColumns = [
     { key: 'cliente', header: 'Cliente', className: 'text-primary-400' },
-    { key: 'dias_sem_vir', header: 'Dias sem vir', render: (v: number) => `${v} Dias`, className: 'text-primary-400 text-center', headerClassName: 'text-center' },
+    { key: 'dias_sem_vir', header: 'Dias sem vir', render: (v: string | number) => `${v} Dias`, className: 'text-primary-400 text-center', headerClassName: 'text-center' },
     {
       key: 'investimento',
       header: 'Investimento (R$)',
-      render: (v: number) => formatCurrency(v),
+      render: (v: string | number) => formatCurrency(Number(v)),
       className: 'text-primary-400 text-right',
       headerClassName: 'text-right',
     },
   ];
 
   // Mostra skeleton enquanto carrega e não tem dados
-  if (loading && !data.pacientes) {
+  if (isLoading && !data.pacientes) {
     return (
       <div className="space-y-6">
         <PageSkeleton />
@@ -91,6 +89,11 @@ export function PacientesPage() {
 
   return (
     <div className="space-y-6">
+      {/* Header with revalidating indicator */}
+      <div className="flex items-center justify-end">
+        <RevalidatingIndicator isRevalidating={isRevalidating} />
+      </div>
+
       {/* Three Column Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Faturamento Paciente */}

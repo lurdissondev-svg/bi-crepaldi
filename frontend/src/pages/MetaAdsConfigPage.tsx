@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { AlertCircle, CheckCircle, RefreshCw, Eye, EyeOff, ExternalLink } from 'lucide-react';
-import type { MetaAdsConfig, MetaAdsValidationResult } from '../types';
 import { api } from '../services/api';
 
 type ConfigStatus = 'pending' | 'configured' | 'error';

@@ -177,6 +177,17 @@ export interface MarketingData {
     avgDaysInStatus: number;
   }>;
   conversionRate: string;
+  heatmap?: Array<{
+    dayOfWeek: number;
+    hour: number;
+    count: number;
+  }>;
+  metrics?: {
+    avgConversionDays: number;
+    avgInProgressDays: number;
+    totalConverted: number;
+    totalDisqualified: number;
+  };
 }
 
 // Dashboard Comercial
@@ -310,4 +321,100 @@ export interface FilterOptions {
   dealCategories: Array<{ id: number; name: string }>;
   centrosCusto: Array<{ id: string; nome: string }>;
   profissionais: Array<{ id: string; nome: string }>;
+}
+
+// Customer Analytics (Phase 2)
+export interface ConversionMetrics {
+  total_leads: number;
+  converted: number;
+  disqualified: number;
+  in_progress: number;
+  conversion_rate: number;
+  avg_conversion_days: number | null;
+  avg_in_progress_days: number | null;
+}
+
+export interface ConversionFunnelStage {
+  stage: string;
+  stageId: string;
+  semantic: string | null;
+  count: number;
+  percentage: number;
+  avgDaysInStage: number;
+  dropOffRate: number;
+}
+
+export interface ReturningCustomerStats {
+  returning_leads: number;
+  new_leads: number;
+  total_leads: number;
+  returning_rate: number;
+}
+
+export interface RFMSegment {
+  rfm_segment: string;
+  count: number;
+  avg_ltv: number;
+  avg_purchases: number;
+  avg_ticket: number;
+}
+
+export interface TopCustomerByLTV {
+  cliente_id: number;
+  cliente_nome: string;
+  total_compras: number;
+  total_gasto: number;
+  ticket_medio: number;
+  dias_como_cliente: number;
+  frequencia_mensal: number;
+  lifetime_value: number;
+  predicted_ltv: number;
+  rfm_segment: string;
+}
+
+// Marketing ROI (Phase 4)
+export interface MarketingROIBySource {
+  source: string;
+  total_leads: number;
+  converted_leads: number;
+  total_revenue: number;
+  total_spend: number;
+  roas: number | null;
+  cpl: number | null;
+  conversion_rate: number;
+}
+
+export interface MarketingROITotals {
+  totalLeads: number;
+  convertedLeads: number;
+  totalRevenue: number;
+  totalSpend: number;
+  roas: string | null;
+  cpl: string | null;
+  conversionRate: string;
+}
+
+export interface MarketingROIData {
+  bySource: MarketingROIBySource[];
+  totals: MarketingROITotals;
+}
+
+export interface SpendTrendData {
+  date: string;
+  platform: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+}
+
+export interface MetaAdsSummary {
+  totalSpend: number;
+  totalImpressions: number;
+  totalClicks: number;
+  totalLeads: number;
+  totalReach: number;
+  avgCpc: number;
+  avgCpm: number;
+  avgCtr: number;
+  costPerLead: number | null;
 }

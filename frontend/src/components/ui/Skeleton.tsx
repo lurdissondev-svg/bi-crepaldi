@@ -2,15 +2,17 @@ import { cn } from '../../utils/cn';
 
 interface SkeletonProps {
   className?: string;
+  style?: React.CSSProperties;
 }
 
-export function Skeleton({ className }: SkeletonProps) {
+export function Skeleton({ className, style }: SkeletonProps) {
   return (
     <div
       className={cn(
         'animate-pulse bg-[var(--color-bg-tertiary)] rounded',
         className
       )}
+      style={style}
     />
   );
 }
@@ -63,6 +65,22 @@ export function PageSkeleton() {
       </div>
       <ChartSkeleton />
       <TableSkeleton />
+    </div>
+  );
+}
+
+interface RevalidatingIndicatorProps {
+  isRevalidating: boolean;
+  className?: string;
+}
+
+export function RevalidatingIndicator({ isRevalidating, className }: RevalidatingIndicatorProps) {
+  if (!isRevalidating) return null;
+
+  return (
+    <div className={cn('flex items-center gap-2 text-xs text-dark-muted', className)}>
+      <div className="w-2 h-2 bg-primary-400 rounded-full animate-pulse" />
+      <span>Atualizando...</span>
     </div>
   );
 }

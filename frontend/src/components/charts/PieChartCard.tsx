@@ -122,8 +122,8 @@ export function PieChartCard({
                   paddingLeft: '20px',
                   fontSize: '12px',
                 }}
-                formatter={(value, entry: { payload?: DataPoint }) => {
-                  const item = entry.payload;
+                formatter={(value: string) => {
+                  const item = data.find(d => d.name === value);
                   if (!item) return value;
                   const percent = total > 0 ? (item.value / total) * 100 : 0;
                   return (

@@ -93,7 +93,7 @@ export function AreaChartCard({
               iconSize={8}
             />
           )}
-          {dataKeys.map((dk, index) => (
+          {dataKeys.map((dk) => (
             <Area
               key={dk.key}
               type="monotone"

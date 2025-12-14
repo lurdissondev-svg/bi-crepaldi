@@ -4,6 +4,7 @@ import config from '../config/index.js';
 import logger, { startTimer, logDataInconsistency } from '../utils/logger.js';
 import bitrix24Service from './bitrix24.service.js';
 import belleService from './belle.service.js';
+import customerAnalyticsService from './customer-analytics.service.js';
 import { normalizePhone, normalizeEmail } from '../validators/dataValidator.js';
 
 /**
@@ -115,6 +116,13 @@ class SyncService {
         await this.runCorrelation();
       } catch (error) {
         logger.error('Erro na correlação:', error.message);
+      }
+
+      // Customer Analytics (Phase 2)
+      try {
+        await this.runCustomerAnalytics();
+      } catch (error) {
+        logger.error('Erro no customer analytics:', error.message);
       }
 
       // Agregações
@@ -631,6 +639,28 @@ class SyncService {
       logger.info(`Correlações encontradas: ${correlationsFound} de ${leads.length} leads analisados`);
     } catch (error) {
       await this.finishSyncLog(logId, 'error', {}, error.message);
+      timer({ status: 'error' });
+      throw error;
+    }
+  }
+
+  // ==================== CUSTOMER ANALYTICS ====================
+
+  async runCustomerAnalytics() {
+    const timer = startTimer('Customer Analytics');
+
+    try {
+      // Atualiza métricas de todos os clientes (LTV, RFM)
+      const analyticsResult = await customerAnalyticsService.updateCustomerAnalytics();
+      logger.info(`[CustomerAnalytics] ${analyticsResult.updatedCount} clientes atualizados`);
+
+      // Mapeia leads para clientes existentes
+      const mappingResult = await customerAnalyticsService.mapLeadsToCustomers();
+      logger.info(`[CustomerAnalytics] ${mappingResult.matchedCount} leads mapeados`);
+
+      timer({ status: 'success', analytics: analyticsResult.updatedCount, mappings: mappingResult.matchedCount });
+    } catch (error) {
+      logger.error('Erro no customer analytics:', error.message);
       timer({ status: 'error' });
       throw error;
     }

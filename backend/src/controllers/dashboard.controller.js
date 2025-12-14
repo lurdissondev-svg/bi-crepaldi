@@ -3,6 +3,7 @@ import belleService from '../services/belle.service.js';
 import dashboardDBService from '../services/dashboard.db.service.js';
 import leadSaleCorrelator from '../services/leadSaleCorrelator.js';
 import syncService from '../services/sync.service.js';
+import customerAnalyticsService from '../services/customer-analytics.service.js';
 import { getDateRanges, formatCurrency, getDecade } from '../utils/dateUtils.js';
 import logger from '../utils/logger.js';
 
@@ -56,11 +57,19 @@ export const dashboardController = {
       const pacientesNovoVenda = dealsAnalytics.won || 0;
       const ticketMedioPacienteNovo = dealsAnalytics.averageTicket || 0;
 
-      // Calcular pacientes recorrentes baseado em estimativas dos dados já carregados
-      // (otimizado para performance - cálculo preciso seria feito em sync background)
-      const leadsRecorrentes = Math.floor(leadsAnalytics.total * 0.3);
-      const leadsRecorrentesAgendados = Math.floor(leadsAgendados * 0.3);
-      const pacientesRecorrentes = Math.floor(faturamentoAtual.quantidadeMovimentos * 0.4);
+      // Buscar estatísticas de clientes recorrentes do banco de dados
+      let returningStats;
+      try {
+        returningStats = await customerAnalyticsService.getReturningCustomerStats(startDate, endDate);
+      } catch {
+        returningStats = { returning_leads: 0, new_leads: 0, returning_rate: 0.3 };
+      }
+
+      // Calcular pacientes recorrentes baseado em dados reais quando disponíveis
+      const returningRate = returningStats.returning_rate || 0.3;
+      const leadsRecorrentes = returningStats.returning_leads || Math.floor(leadsAnalytics.total * returningRate);
+      const leadsRecorrentesAgendados = Math.floor(leadsAgendados * returningRate);
+      const pacientesRecorrentes = Math.floor(faturamentoAtual.quantidadeMovimentos * (1 - returningRate));
       const ticketMedioPacienteRecorrente = faturamentoAtual.ticketMedio || 0;
 
       // Desempenho por dezena
@@ -138,6 +147,8 @@ export const dashboardController = {
         faturamentoAnoAtual,
         faturamentoAnoAnterior,
         faturamentoHoje,
+        newPatientStatsMensal,
+        newPatientStatsAnual,
       ] = await Promise.all([
         belleService.getFaturamentoContasReceber(startDate, endDate, centrosCusto),
         belleService.getFaturamentoContasReceber(
@@ -157,6 +168,14 @@ export const dashboardController = {
         ),
         // Busca TODAS as vendas de hoje sem filtro de estabelecimento
         belleService.getFaturamentoHoje(today),
+        // Calcula porcentagem de pacientes novos vs recorrentes (mensal)
+        dashboardDBService.getNewPatientRevenuePercentage(startDate, endDate, centrosCusto),
+        // Calcula porcentagem de pacientes novos vs recorrentes (anual)
+        dashboardDBService.getNewPatientRevenuePercentage(
+          dateRanges.thisYear.start,
+          dateRanges.thisYear.end,
+          centrosCusto
+        ),
       ]);
 
       // Faturamento mensal
@@ -173,10 +192,10 @@ export const dashboardController = {
         ? ((faturamentoAnual - faturamentoAnoAnteriorValor) / faturamentoAnoAnteriorValor) * 100
         : 0;
 
-      // % pacientes novos - usando estimativa para performance
-      // (cálculo preciso seria feito em sync background com dados do banco)
-      const pacientesNovosPercentualMensal = 35; // Estimativa baseada em médias históricas
-      const pacientesNovosPercentualAnual = 30;
+      // % pacientes novos - calculado a partir dos dados reais do banco
+      // Usa fallback para estimativas se os dados não estiverem disponíveis ainda
+      const pacientesNovosPercentualMensal = newPatientStatsMensal.newPatientPercentage || 35;
+      const pacientesNovosPercentualAnual = newPatientStatsAnual.newPatientPercentage || 30;
 
       // Crescimento
       const crescimentoMensal = {
@@ -627,6 +646,117 @@ export const dashboardController = {
       res.status(500).json({
         success: false,
         error: 'Erro ao buscar dados de pacientes',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== CUSTOMER ANALYTICS ====================
+
+  async getConversionMetrics(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const metrics = await customerAnalyticsService.getConversionMetrics(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: metrics,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar métricas de conversão:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar métricas de conversão',
+        message: error.message,
+      });
+    }
+  },
+
+  async getConversionFunnel(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const funnel = await customerAnalyticsService.getConversionFunnel(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: funnel,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar funil de conversão:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar funil de conversão',
+        message: error.message,
+      });
+    }
+  },
+
+  async getReturningCustomerStats(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const stats = await customerAnalyticsService.getReturningCustomerStats(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: stats,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar estatísticas de clientes recorrentes:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar estatísticas de clientes recorrentes',
+        message: error.message,
+      });
+    }
+  },
+
+  async getRFMSegmentation(req, res) {
+    try {
+      const segments = await customerAnalyticsService.getRFMSegmentation();
+
+      res.json({
+        success: true,
+        data: segments,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar segmentação RFM:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar segmentação RFM',
+        message: error.message,
+      });
+    }
+  },
+
+  async getTopCustomersByLTV(req, res) {
+    try {
+      const { limit } = req.query;
+      const customers = await customerAnalyticsService.getTopCustomersByLTV(parseInt(limit) || 20);
+
+      res.json({
+        success: true,
+        data: customers,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar top clientes por LTV:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar top clientes por LTV',
         message: error.message,
       });
     }

@@ -12,6 +12,14 @@ import type {
   FilterState,
   MetaAdsConfig,
   MetaAdsValidationResult,
+  ConversionMetrics,
+  ConversionFunnelStage,
+  ReturningCustomerStats,
+  RFMSegment,
+  TopCustomerByLTV,
+  MarketingROIData,
+  SpendTrendData,
+  MetaAdsSummary,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -114,6 +122,46 @@ class ApiService {
     return response.data.data;
   }
 
+  // Customer Analytics (Phase 2)
+  async getConversionMetrics(filters: Partial<FilterState> = {}): Promise<ConversionMetrics> {
+    const response = await this.client.get<ApiResponse<ConversionMetrics>>(
+      '/dashboard/conversion-metrics',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  async getConversionFunnel(filters: Partial<FilterState> = {}): Promise<ConversionFunnelStage[]> {
+    const response = await this.client.get<ApiResponse<ConversionFunnelStage[]>>(
+      '/dashboard/conversion-funnel',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  async getReturningCustomerStats(filters: Partial<FilterState> = {}): Promise<ReturningCustomerStats> {
+    const response = await this.client.get<ApiResponse<ReturningCustomerStats>>(
+      '/dashboard/returning-customers',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  async getRFMSegmentation(): Promise<RFMSegment[]> {
+    const response = await this.client.get<ApiResponse<RFMSegment[]>>(
+      '/dashboard/rfm-segmentation'
+    );
+    return response.data.data;
+  }
+
+  async getTopCustomersByLTV(limit: number = 20): Promise<TopCustomerByLTV[]> {
+    const response = await this.client.get<ApiResponse<TopCustomerByLTV[]>>(
+      '/dashboard/top-customers-ltv',
+      { params: { limit } }
+    );
+    return response.data.data;
+  }
+
   async healthCheck(): Promise<{ status: string; timestamp: string }> {
     const response = await this.client.get('/health');
     return response.data;
@@ -164,6 +212,39 @@ class ApiService {
   async getMetaAdsInsights(filters: Partial<FilterState> = {}): Promise<Record<string, unknown>> {
     const response = await this.client.get<ApiResponse<Record<string, unknown>>>(
       '/meta/insights',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  async getMetaAdsSummary(filters: Partial<FilterState> = {}): Promise<MetaAdsSummary> {
+    const response = await this.client.get<ApiResponse<MetaAdsSummary>>(
+      '/meta/summary',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  async getMarketingROI(filters: Partial<FilterState> = {}): Promise<MarketingROIData> {
+    const response = await this.client.get<ApiResponse<MarketingROIData>>(
+      '/meta/roi',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  async getSpendTrend(filters: Partial<FilterState> = {}): Promise<SpendTrendData[]> {
+    const response = await this.client.get<ApiResponse<SpendTrendData[]>>(
+      '/meta/spend-trend',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  async syncMetaAdsSpend(filters: Partial<FilterState> = {}): Promise<{ syncedCount: number; totalInsights: number }> {
+    const response = await this.client.post<ApiResponse<{ syncedCount: number; totalInsights: number }>>(
+      '/meta/sync-spend',
+      null,
       { params: this.buildParams(filters) }
     );
     return response.data.data;

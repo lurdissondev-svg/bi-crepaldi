@@ -17,6 +17,13 @@ router.get('/metas', cacheMiddleware(cacheKey), dashboardController.getMetas);
 router.get('/pacientes', cacheMiddleware(cacheKey), dashboardController.getPacientes);
 router.get('/lead-sale-correlation', cacheMiddleware(cacheKey), dashboardController.getLeadSaleCorrelation);
 
+// Customer Analytics (Phase 2)
+router.get('/conversion-metrics', cacheMiddleware(cacheKey), dashboardController.getConversionMetrics);
+router.get('/conversion-funnel', cacheMiddleware(cacheKey), dashboardController.getConversionFunnel);
+router.get('/returning-customers', cacheMiddleware(cacheKey), dashboardController.getReturningCustomerStats);
+router.get('/rfm-segmentation', cacheMiddleware(cacheKey), dashboardController.getRFMSegmentation);
+router.get('/top-customers-ltv', cacheMiddleware(cacheKey), dashboardController.getTopCustomersByLTV);
+
 // Opções de filtro
 router.get('/filtros', cacheMiddleware(cacheKey), dashboardController.getFilterOptions);
 

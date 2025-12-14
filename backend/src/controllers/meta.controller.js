@@ -218,10 +218,107 @@ export async function getSummary(req, res) {
   }
 }
 
-// Initialize service with stored config on startup
-export function initMetaAds() {
-  if (storedConfig) {
-    metaAdsService.setConfig(storedConfig);
-    logger.info('Meta Ads service initialized with stored config');
+/**
+ * Get marketing ROI metrics
+ */
+export async function getMarketingROI(req, res) {
+  try {
+    const { data_inicio, data_fim } = req.query;
+
+    if (!data_inicio || !data_fim) {
+      return res.status(400).json({
+        success: false,
+        error: 'Datas de início e fim são obrigatórias',
+      });
+    }
+
+    const roi = await metaAdsService.getMarketingROI(data_inicio, data_fim);
+
+    res.json({
+      success: true,
+      data: roi,
+    });
+  } catch (error) {
+    logger.error('Error fetching marketing ROI:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao obter métricas de ROI',
+    });
+  }
+}
+
+/**
+ * Get spend trend data
+ */
+export async function getSpendTrend(req, res) {
+  try {
+    const { data_inicio, data_fim } = req.query;
+
+    if (!data_inicio || !data_fim) {
+      return res.status(400).json({
+        success: false,
+        error: 'Datas de início e fim são obrigatórias',
+      });
+    }
+
+    const trend = await metaAdsService.getSpendTrend(data_inicio, data_fim);
+
+    res.json({
+      success: true,
+      data: trend,
+    });
+  } catch (error) {
+    logger.error('Error fetching spend trend:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao obter tendência de gastos',
+    });
+  }
+}
+
+/**
+ * Sync Meta Ads spend data
+ */
+export async function syncSpend(req, res) {
+  try {
+    const { data_inicio, data_fim } = req.query;
+
+    if (!data_inicio || !data_fim) {
+      return res.status(400).json({
+        success: false,
+        error: 'Datas de início e fim são obrigatórias',
+      });
+    }
+
+    const result = await metaAdsService.syncSpendData(data_inicio, data_fim);
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error) {
+    logger.error('Error syncing Meta Ads spend:', error);
+
+    if (error.message === 'Meta Ads não está configurado') {
+      return res.status(400).json({
+        success: false,
+        error: 'Meta Ads não está configurado',
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao sincronizar gastos',
+    });
+  }
+}
+
+// Initialize service from database on startup
+export async function initMetaAds() {
+  try {
+    await metaAdsService.initialize();
+    logger.info('Meta Ads service initialization complete');
+  } catch (error) {
+    logger.warn('Meta Ads service initialization failed:', error.message);
   }
 }

@@ -1,24 +1,23 @@
-import { useEffect, useState } from 'react';
-import { FilterBar } from '../components/filters/FilterBar';
+import { useState, useEffect } from 'react';
 import { ProgressBar } from '../components/dashboard/ProgressBar';
 import { useDashboard } from '../hooks/useDashboard';
 import { AlertTriangle } from 'lucide-react';
-import { PageSkeleton } from '../components/ui/Skeleton';
+import { PageSkeleton, RevalidatingIndicator } from '../components/ui/Skeleton';
 
 export function MetasPage() {
-  const { data, loading, filters, setFilters, filterOptions, fetchMetas } = useDashboard();
+  const { data, loadingStates, revalidatingStates } = useDashboard();
+
+  // Use specific loading state for metas
+  const isLoading = loadingStates.metas;
+  const isRevalidating = revalidatingStates.metas;
 
   const [metas, setMetas] = useState({
     spa: {
-      meta1: { expectativa: 43.48, realidade: null, diaria: null },
-      meta2: { expectativa: 43.48, realidade: null, diaria: null },
-      meta3: { expectativa: 43.48, realidade: null, diaria: null },
+      meta1: { expectativa: 43.48, realidade: null as number | null, diaria: null as number | null },
+      meta2: { expectativa: 43.48, realidade: null as number | null, diaria: null as number | null },
+      meta3: { expectativa: 43.48, realidade: null as number | null, diaria: null as number | null },
     },
   });
-
-  useEffect(() => {
-    fetchMetas();
-  }, [fetchMetas]);
 
   useEffect(() => {
     if (data.metas?.metaSpa) {
@@ -29,8 +28,8 @@ export function MetasPage() {
   const renderMetaCard = (
     title: string,
     expectativa: number,
-    realidade: number | null,
-    diaria: number | null
+    _realidade: number | null,
+    _diaria: number | null
   ) => (
     <div className="card">
       <h3 className="card-header">{title}</h3>
@@ -58,7 +57,7 @@ export function MetasPage() {
   );
 
   // Mostra skeleton enquanto carrega e não tem dados
-  if (loading && !data.metas) {
+  if (isLoading && !data.metas) {
     return (
       <div className="space-y-6">
         <h2 className="text-lg font-semibold text-dark-text">META SPA</h2>
@@ -69,8 +68,11 @@ export function MetasPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <h2 className="text-lg font-semibold text-dark-text">META SPA</h2>
+      {/* Header with revalidating indicator */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-dark-text">META SPA</h2>
+        <RevalidatingIndicator isRevalidating={isRevalidating} />
+      </div>
 
       {/* Meta Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

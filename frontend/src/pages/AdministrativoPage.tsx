@@ -42,7 +42,7 @@ const mockPareto8020 = [
 ];
 
 export function AdministrativoPage() {
-  const { data, loading, filters, setFilters, filterOptions, fetchAtendimento } = useDashboard();
+  const { loading, filters, setFilters, filterOptions, fetchAtendimento } = useDashboard();
 
   useEffect(() => {
     fetchAtendimento();
@@ -51,13 +51,13 @@ export function AdministrativoPage() {
   const desempenhoColumns = [
     { key: 'responsavel', header: 'responsavel', className: 'text-primary-400' },
     { key: 'total_orcamentos', header: 'Total de Orçamentos', className: 'text-primary-400' },
-    { key: 'valor_total_orcado', header: 'Valor total Orçado (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400' },
+    { key: 'valor_total_orcado', header: 'Valor total Orçado (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400' },
     { key: 'aprovados', header: 'Aprovados', className: 'text-primary-400' },
-    { key: 'valor_total_aprovado', header: 'Valor Total Aprovado (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400' },
+    { key: 'valor_total_aprovado', header: 'Valor Total Aprovado (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400' },
     {
       key: 'percentual',
       header: '%',
-      render: (v: number) => (
+      render: (v: string | number) => (
         <div className="flex items-center gap-2">
           <span>{v}%</span>
           <div className="w-20 h-2 bg-dark-border rounded-full overflow-hidden">
@@ -73,9 +73,9 @@ export function AdministrativoPage() {
 
   const ticketMedioColumns = [
     { key: 'procedimento', header: 'Procedimento', className: 'text-primary-400' },
-    { key: 'ticket_medio', header: 'Ticket Medio (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400' },
+    { key: 'ticket_medio', header: 'Ticket Medio (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400' },
     { key: 'vendas', header: 'Venda', className: 'text-primary-400' },
-    { key: 'faturamento_total', header: 'Faturamento Total (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400' },
+    { key: 'faturamento_total', header: 'Faturamento Total (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400' },
   ];
 
   return (

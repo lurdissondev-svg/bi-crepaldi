@@ -1,11 +1,9 @@
-import { useEffect, useState } from 'react';
 import { FilterBar } from '../components/filters/FilterBar';
 import { DataTable } from '../components/dashboard/DataTable';
 import { PieChartCard } from '../components/charts/PieChartCard';
-import { ProgressBar } from '../components/dashboard/ProgressBar';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency } from '../utils/format';
-import { PageSkeleton } from '../components/ui/Skeleton';
+import { PageSkeleton, RevalidatingIndicator } from '../components/ui/Skeleton';
 
 // Mock data
 const mockDesempenho = [
@@ -40,32 +38,25 @@ const mockPareto8020 = [
 ];
 
 export function AtendimentoPage() {
-  const { data, loading, filters, setFilters, filterOptions, fetchAtendimento } = useDashboard();
+  const { data, loadingStates, revalidatingStates, filters, setFilters, filterOptions } = useDashboard();
 
-  const [totalFaturamento, setTotalFaturamento] = useState(1195926.27);
+  // Use specific loading state for atendimento
+  const isLoading = loadingStates.atendimento;
+  const isRevalidating = revalidatingStates.atendimento;
 
-  useEffect(() => {
-    fetchAtendimento();
-  }, [fetchAtendimento]);
-
-  useEffect(() => {
-    if (data.atendimento) {
-      setTotalFaturamento(data.atendimento.totalFaturamento);
-    }
-  }, [data.atendimento]);
 
   const desempenhoColumns = [
     { key: 'responsavel', header: 'Responsável', className: 'text-primary-400' },
     { key: 'total_orcamentos', header: 'Total de Orçamentos', className: 'text-primary-400 text-center', headerClassName: 'text-center' },
-    { key: 'valor_total_orcado', header: 'Valor Orçado (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
+    { key: 'valor_total_orcado', header: 'Valor Orçado (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
     { key: 'aprovados', header: 'Aprovados', className: 'text-primary-400 text-center', headerClassName: 'text-center' },
-    { key: 'valor_total_aprovado', header: 'Valor Aprovado (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
+    { key: 'valor_total_aprovado', header: 'Valor Aprovado (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
     {
       key: 'percentual',
       header: '%',
       headerClassName: 'text-center',
       className: 'text-center',
-      render: (v: number) => (
+      render: (v: string | number) => (
         <div className="flex items-center justify-center gap-2">
           <span>{v}%</span>
           <div className="w-20 h-2 bg-dark-border rounded-full overflow-hidden">
@@ -81,13 +72,13 @@ export function AtendimentoPage() {
 
   const ticketMedioColumns = [
     { key: 'procedimento', header: 'Procedimento', className: 'text-primary-400' },
-    { key: 'ticket_medio', header: 'Ticket Médio (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
+    { key: 'ticket_medio', header: 'Ticket Médio (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
     { key: 'vendas', header: 'Vendas', className: 'text-primary-400 text-center', headerClassName: 'text-center' },
-    { key: 'faturamento_total', header: 'Faturamento Total (R$)', render: (v: number) => formatCurrency(v), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
+    { key: 'faturamento_total', header: 'Faturamento Total (R$)', render: (v: string | number) => formatCurrency(Number(v)), className: 'text-primary-400 text-right', headerClassName: 'text-right' },
   ];
 
   // Mostra skeleton enquanto carrega e não tem dados
-  if (loading && !data.atendimento) {
+  if (isLoading && !data.atendimento) {
     return (
       <div className="space-y-6">
         <h2 className="text-lg font-semibold text-dark-text">DESEMPENHO</h2>
@@ -107,13 +98,18 @@ export function AtendimentoPage() {
       {/* Header */}
       <h2 className="text-lg font-semibold text-dark-text">DESEMPENHO</h2>
 
-      {/* Filters */}
-      <FilterBar
-        filters={filters}
-        onFilterChange={setFilters}
-        filterOptions={filterOptions}
-        showProfissional
-      />
+      {/* Filters with revalidating indicator */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex-1">
+          <FilterBar
+            filters={filters}
+            onFilterChange={setFilters}
+            filterOptions={filterOptions}
+            showProfissional
+          />
+        </div>
+        <RevalidatingIndicator isRevalidating={isRevalidating} />
+      </div>
 
       {/* Desempenho Table */}
       <DataTable

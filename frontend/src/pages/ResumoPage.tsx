@@ -1,42 +1,42 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { FilterBar } from '../components/filters/FilterBar';
 import { AreaChartCard } from '../components/charts/AreaChartCard';
 import { BarChartCard } from '../components/charts/BarChartCard';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency } from '../utils/format';
+import { RevalidatingIndicator } from '../components/ui/Skeleton';
 
 // Dados padrão (fallback enquanto carrega)
 const defaultDesempenhoDezena = [
-  { name: '1ª dezena', mes_atual: 0, mes_anterior: 0 },
-  { name: '2ª dezena', mes_atual: 0, mes_anterior: 0 },
-  { name: '3ª dezena', mes_atual: 0, mes_anterior: 0 },
+  { name: '1a dezena', mes_atual: 0, mes_anterior: 0 },
+  { name: '2a dezena', mes_atual: 0, mes_anterior: 0 },
+  { name: '3a dezena', mes_atual: 0, mes_anterior: 0 },
 ];
 
 export function ResumoPage() {
-  const { data, loading, filters, setFilters, filterOptions, fetchResumo } = useDashboard();
+  const { data, revalidatingStates, filters, setFilters, filterOptions } = useDashboard();
+
+  // Use specific loading state for resumo
+  const isRevalidating = revalidatingStates.resumo;
+
   const [localData, setLocalData] = useState({
     faturamento: {
-      total: 1250415.05,
-      variacao: -15.5,
+      total: 0,
+      variacao: 0,
     },
     pacienteNovo: {
-      leadsNovos: 17,
+      leadsNovos: 0,
       leadsAgendados: 0,
-      pacientesVenda: 72,
-      ticketMedio: 1342.69,
+      pacientesVenda: 0,
+      ticketMedio: 0,
     },
     pacienteRecorrente: {
-      leads: 24,
+      leads: 0,
       leadsAgendados: 0,
-      pacientes: 236,
-      ticketMedio: 3937.62,
+      pacientes: 0,
+      ticketMedio: 0,
     },
   });
-
-  // Refetch quando filtros mudarem
-  useEffect(() => {
-    fetchResumo();
-  }, [filters.dataInicio, filters.dataFim, filters.centrosCusto]);
 
   useEffect(() => {
     if (data.resumo) {
@@ -65,12 +65,17 @@ export function ResumoPage() {
         <button className="tab">Pacientes</button>
       </div>
 
-      {/* Filters */}
-      <FilterBar
-        filters={filters}
-        onFilterChange={setFilters}
-        filterOptions={filterOptions}
-      />
+      {/* Filters with revalidating indicator */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex-1">
+          <FilterBar
+            filters={filters}
+            onFilterChange={setFilters}
+            filterOptions={filterOptions}
+          />
+        </div>
+        <RevalidatingIndicator isRevalidating={isRevalidating} />
+      </div>
 
       {/* Main Metrics Row */}
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
@@ -103,7 +108,7 @@ export function ResumoPage() {
             </div>
             <div className="text-center p-3">
               <p className="text-xl font-bold text-dark-text">{formatCurrency(localData.pacienteNovo.ticketMedio)}</p>
-              <p className="text-xs text-dark-muted mt-1">Ticket Médio</p>
+              <p className="text-xs text-dark-muted mt-1">Ticket Medio</p>
             </div>
           </div>
         </div>
@@ -126,7 +131,7 @@ export function ResumoPage() {
             </div>
             <div className="text-center p-3">
               <p className="text-xl font-bold text-primary-400">{formatCurrency(localData.pacienteRecorrente.ticketMedio)}</p>
-              <p className="text-xs text-dark-muted mt-1">Ticket Médio</p>
+              <p className="text-xs text-dark-muted mt-1">Ticket Medio</p>
             </div>
           </div>
         </div>
@@ -149,9 +154,9 @@ export function ResumoPage() {
           formatYAxis="currency"
         />
 
-        {/* Proporção de Vendas por Procedimento */}
+        {/* Proporcao de Vendas por Procedimento */}
         <BarChartCard
-          title="Proporção de Vendas por Procedimento"
+          title="Proporcao de Vendas por Procedimento"
           data={data.resumo?.procedimentosPorCategoria?.slice(0, 5).map((p: any) => ({
             name: p.nome || 'Outros',
             value: p.quantidade || 0,
@@ -161,16 +166,6 @@ export function ResumoPage() {
           formatYAxis="number"
         />
       </div>
-
-      {/* Loading Overlay */}
-      {loading && (
-        <div className="fixed inset-0 bg-dark-bg/50 flex items-center justify-center z-50">
-          <div className="bg-dark-card p-6 rounded-xl shadow-xl">
-            <div className="animate-spin w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full mx-auto" />
-            <p className="text-dark-muted mt-3">Carregando dados...</p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

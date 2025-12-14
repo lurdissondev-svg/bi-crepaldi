@@ -32,13 +32,6 @@ const colorClasses = {
   purple: 'bg-purple-500/20 text-purple-400',
 };
 
-const iconColors = {
-  blue: '#60a5fa',
-  green: '#22c55e',
-  red: '#ef4444',
-  yellow: '#eab308',
-  purple: '#a855f7',
-};
 
 export function KPICard({
   title,

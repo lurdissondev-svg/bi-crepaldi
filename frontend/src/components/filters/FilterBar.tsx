@@ -143,14 +143,6 @@ export function FilterBar({
     onFilterChange({ ...filters, [field]: value });
   };
 
-  const getEstabelecimentoLabel = () => {
-    if (filters.centrosCusto.length === 0) return 'Todos';
-    if (filters.centrosCusto.length === 1) {
-      return estabelecimentos.find(e => e.id === filters.centrosCusto[0])?.nome || '1 selecionado';
-    }
-    return `${filters.centrosCusto.length} selecionados`;
-  };
-
   const getProfissionalLabel = () => {
     if (!filters.profissional) return 'Todos';
     return profissionais.find(p => p.id === filters.profissional)?.nome || 'Selecionado';
@@ -164,7 +156,7 @@ export function FilterBar({
       }
     }
     const formatDate = (d: string) => {
-      const [y, m, day] = d.split('-');
+      const [, m, day] = d.split('-');
       return `${day}/${m}`;
     };
     return `${formatDate(filters.dataInicio)} - ${formatDate(filters.dataFim)}`;

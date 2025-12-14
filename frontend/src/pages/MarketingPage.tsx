@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { FilterBar } from '../components/filters/FilterBar';
 import { BarChartCard } from '../components/charts/BarChartCard';
 import { PieChartCard } from '../components/charts/PieChartCard';
@@ -9,14 +9,14 @@ import { HeatmapChart } from '../components/charts/HeatmapChart';
 import { KPICard } from '../components/charts/KPICard';
 import { DataTable } from '../components/dashboard/DataTable';
 import { useDashboard } from '../hooks/useDashboard';
-import { PageSkeleton } from '../components/ui/Skeleton';
+import { PageSkeleton, RevalidatingIndicator } from '../components/ui/Skeleton';
 
 export function MarketingPage() {
-  const { data, loading, filters, setFilters, filterOptions, fetchMarketing } = useDashboard();
+  const { data, loadingStates, revalidatingStates, filters, setFilters, filterOptions } = useDashboard();
 
-  useEffect(() => {
-    fetchMarketing();
-  }, [fetchMarketing]);
+  // Use specific loading state for marketing
+  const isLoading = loadingStates.marketing;
+  const isRevalidating = revalidatingStates.marketing;
 
   // Transform API data for charts - derived from real data
   const horarioChegadaData = useMemo(() => {
@@ -42,7 +42,7 @@ export function MarketingPage() {
 
   const totalLeadsData = useMemo(() => {
     if (!data.marketing?.origemLead?.totalLeads) return [];
-    const { total, semPreenchimento, iniciativaInterna, outro } = data.marketing.origemLead.totalLeads;
+    const { total, semPreenchimento, iniciativaInterna } = data.marketing.origemLead.totalLeads;
     if (total === 0) return [];
 
     const result = [];
@@ -104,7 +104,7 @@ export function MarketingPage() {
   ];
 
   // Mostra skeleton enquanto carrega e não tem dados
-  if (loading && !data.marketing) {
+  if (isLoading && !data.marketing) {
     return (
       <div className="space-y-6">
         <FilterBar
@@ -119,12 +119,17 @@ export function MarketingPage() {
 
   return (
     <div className="space-y-6">
-      {/* Filters */}
-      <FilterBar
-        filters={filters}
-        onFilterChange={setFilters}
-        filterOptions={filterOptions}
-      />
+      {/* Filters with revalidating indicator */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex-1">
+          <FilterBar
+            filters={filters}
+            onFilterChange={setFilters}
+            filterOptions={filterOptions}
+          />
+        </div>
+        <RevalidatingIndicator isRevalidating={isRevalidating} />
+      </div>
 
       {/* Horário de Chegada dos Leads */}
       {horarioChegadaData.length > 0 ? (

@@ -855,99 +855,50 @@ class SyncService {
   /**
    * Sincroniza tabela de pacientes inativos
    * Executa a cada 15 minutos (separado do sync principal de 5 min)
-   * Dados desde 01/01/2024 até hoje
+   * IMPORTANTE: Usa dados do banco (contas_receber) para garantir consistência
+   * e considera a última visita em QUALQUER estabelecimento
    */
   async syncInactivePatients() {
     const logId = await this.startSyncLog('pacientes_inativos', 'full_sync');
     const timer = startTimer('Inactive Patients Sync');
 
     try {
-      logger.info('[InactivePatients] Iniciando sync de pacientes inativos...');
+      logger.info('[InactivePatients] Iniciando sync de pacientes inativos do banco de dados...');
 
-      // Período: desde 01/01/2024 até hoje
-      const dataInicio = '2024-01-01';
-      const dataFim = format(new Date(), 'yyyy-MM-dd');
+      // Busca dados agregados de TODOS os estabelecimentos por cliente
+      // A última visita é a mais recente em QUALQUER estabelecimento
+      const clientesResult = await db.query(`
+        SELECT
+          cod_cliente,
+          MAX(raw_data->>'nome_cliente') as cliente_nome,
+          MAX(dt_lancamento) as ultima_visita,
+          COUNT(*) as total_compras,
+          SUM(COALESCE(valor_bruto, 0)) as total_investido,
+          -- Pega o estabelecimento da última visita
+          (SELECT cod_estab FROM contas_receber cr2
+           WHERE cr2.cod_cliente = cr.cod_cliente
+           ORDER BY dt_lancamento DESC LIMIT 1) as ultimo_estab
+        FROM contas_receber cr
+        WHERE cod_cliente IS NOT NULL
+          AND valor_bruto > 0
+          AND dt_lancamento >= '2024-01-01'
+        GROUP BY cod_cliente
+        HAVING MAX(dt_lancamento) < CURRENT_DATE - INTERVAL '60 days'
+        ORDER BY MAX(dt_lancamento) DESC
+      `);
 
-      // Busca todas as vendas do período para calcular última visita por cliente
-      const chunks = belleService.dividePeriodoEmChunks(dataInicio, dataFim);
-      const vendasPorCliente = new Map();
-
-      logger.info(`[InactivePatients] Buscando vendas em ${chunks.length} chunks (${dataInicio} a ${dataFim})`);
-
-      // Busca vendas de cada chunk e estabelecimento
-      for (const chunk of chunks) {
-        const resultados = await belleService.getVendasTodosEstabelecimentos(chunk.inicio, chunk.fim);
-
-        for (const resultado of resultados) {
-          const vendas = resultado.data || [];
-
-          for (const venda of vendas) {
-            const clienteId = parseInt(venda.cod_cliente);
-            if (!clienteId) continue;
-
-            const dataVenda = venda.data_venda ? new Date(venda.data_venda) : null;
-            const valorVenda = parseFloat(venda.valor_venda) || 0;
-
-            if (!vendasPorCliente.has(clienteId)) {
-              vendasPorCliente.set(clienteId, {
-                cliente_id: clienteId,
-                cliente_nome: `Cliente ${clienteId}`,
-                cod_estab: resultado.codestab,
-                ultima_visita: dataVenda,
-                total_investido: 0,
-                total_compras: 0,
-                vendas_datas: [],
-              });
-            }
-
-            const cliente = vendasPorCliente.get(clienteId);
-            cliente.total_investido += valorVenda;
-            cliente.total_compras += 1;
-
-            if (dataVenda) {
-              cliente.vendas_datas.push(dataVenda);
-              if (!cliente.ultima_visita || dataVenda > cliente.ultima_visita) {
-                cliente.ultima_visita = dataVenda;
-              }
-            }
-          }
-        }
-      }
-
-      logger.info(`[InactivePatients] ${vendasPorCliente.size} clientes encontrados com vendas`);
-
-      // Tenta buscar nomes dos clientes do banco (se existir tabela clientes)
-      try {
-        const clientesResult = await db.query(`
-          SELECT cod_cliente, nome, telefone, celular, email
-          FROM clientes
-          WHERE cod_cliente = ANY($1)
-        `, [Array.from(vendasPorCliente.keys())]);
-
-        for (const cliente of clientesResult.rows) {
-          const data = vendasPorCliente.get(cliente.cod_cliente);
-          if (data) {
-            data.cliente_nome = cliente.nome || data.cliente_nome;
-            data.telefone = cliente.telefone;
-            data.celular = cliente.celular;
-            data.email = cliente.email;
-          }
-        }
-      } catch (e) {
-        logger.debug('[InactivePatients] Tabela clientes não disponível, usando IDs');
-      }
+      const clientes = clientesResult.rows;
+      logger.info(`[InactivePatients] ${clientes.length} clientes inativos encontrados no banco`);
 
       // Calcula dias sem vir e define nível de risco
       const hoje = new Date();
       const pacientesInativos = [];
 
-      for (const [, cliente] of vendasPorCliente) {
+      for (const cliente of clientes) {
         if (!cliente.ultima_visita) continue;
 
-        const diasSemVir = Math.floor((hoje - cliente.ultima_visita) / (1000 * 60 * 60 * 24));
-
-        // Considera inativo quem não vem há mais de 60 dias
-        if (diasSemVir < 60) continue;
+        const ultimaVisita = new Date(cliente.ultima_visita);
+        const diasSemVir = Math.floor((hoje - ultimaVisita) / (1000 * 60 * 60 * 24));
 
         // Define nível de risco
         let nivelRisco = 'baixo'; // 60-89 dias
@@ -956,20 +907,17 @@ class SyncService {
         else if (diasSemVir >= 90) nivelRisco = 'medio';
 
         const ticketMedio = cliente.total_compras > 0
-          ? cliente.total_investido / cliente.total_compras
+          ? parseFloat(cliente.total_investido) / parseInt(cliente.total_compras)
           : 0;
 
         pacientesInativos.push({
-          cliente_id: cliente.cliente_id,
-          cliente_nome: cliente.cliente_nome,
-          cod_estab: cliente.cod_estab,
-          telefone: cliente.telefone || null,
-          celular: cliente.celular || null,
-          email: cliente.email || null,
-          ultima_visita: format(cliente.ultima_visita, 'yyyy-MM-dd'),
+          cliente_id: cliente.cod_cliente,
+          cliente_nome: cliente.cliente_nome || `Cliente ${cliente.cod_cliente}`,
+          cod_estab: cliente.ultimo_estab,
+          ultima_visita: format(ultimaVisita, 'yyyy-MM-dd'),
           dias_sem_vir: diasSemVir,
-          total_investido: cliente.total_investido,
-          total_compras: cliente.total_compras,
+          total_investido: parseFloat(cliente.total_investido) || 0,
+          total_compras: parseInt(cliente.total_compras) || 0,
           ticket_medio: ticketMedio,
           nivel_risco: nivelRisco,
         });
@@ -977,9 +925,23 @@ class SyncService {
 
       logger.info(`[InactivePatients] ${pacientesInativos.length} pacientes inativos identificados (60+ dias)`);
 
-      // Primeiro, verifica se algum paciente inativo agendou/voltou
-      // (tem venda mais recente que a última atualização)
-      await this.checkReactivatedPatients(vendasPorCliente);
+      // Remove pacientes que voltaram (estão na tabela mas têm visita recente no banco)
+      const reativadosResult = await db.query(`
+        UPDATE pacientes_inativos pi
+        SET reativado_em = NOW()
+        WHERE reativado_em IS NULL
+          AND EXISTS (
+            SELECT 1 FROM contas_receber cr
+            WHERE cr.cod_cliente = pi.cliente_id
+              AND cr.dt_lancamento > pi.ultima_visita
+              AND cr.dt_lancamento >= CURRENT_DATE - INTERVAL '60 days'
+          )
+        RETURNING cliente_id
+      `);
+
+      if (reativadosResult.rowCount > 0) {
+        logger.info(`[InactivePatients] ${reativadosResult.rowCount} pacientes reativados (voltaram a comprar)`);
+      }
 
       // Upsert dos pacientes inativos
       let inserted = 0;
@@ -989,16 +951,14 @@ class SyncService {
         try {
           const result = await db.query(`
             INSERT INTO pacientes_inativos
-              (cliente_id, cliente_nome, cod_estab, telefone, celular, email,
+              (cliente_id, cliente_nome, cod_estab,
                ultima_visita, dias_sem_vir, total_investido, total_compras,
                ticket_medio, nivel_risco, data_atualizacao)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
             ON CONFLICT (cliente_id)
             DO UPDATE SET
               cliente_nome = EXCLUDED.cliente_nome,
-              telefone = EXCLUDED.telefone,
-              celular = EXCLUDED.celular,
-              email = EXCLUDED.email,
+              cod_estab = EXCLUDED.cod_estab,
               ultima_visita = EXCLUDED.ultima_visita,
               dias_sem_vir = EXCLUDED.dias_sem_vir,
               total_investido = EXCLUDED.total_investido,
@@ -1012,9 +972,6 @@ class SyncService {
             paciente.cliente_id,
             paciente.cliente_nome,
             paciente.cod_estab,
-            paciente.telefone,
-            paciente.celular,
-            paciente.email,
             paciente.ultima_visita,
             paciente.dias_sem_vir,
             paciente.total_investido,
@@ -1034,11 +991,9 @@ class SyncService {
       }
 
       await this.finishSyncLog(logId, 'success', {
-        records_fetched: vendasPorCliente.size,
+        records_fetched: clientes.length,
         records_inserted: inserted,
         records_updated: updated,
-        date_from: dataInicio,
-        date_to: dataFim,
       });
 
       timer({ status: 'success', inactive: pacientesInativos.length, inserted, updated });
@@ -1050,68 +1005,6 @@ class SyncService {
       timer({ status: 'error' });
       logger.error('[InactivePatients] Erro no sync:', error.message);
       throw error;
-    }
-  }
-
-  /**
-   * Verifica pacientes que foram reativados (voltaram a comprar)
-   * Move para histórico e marca como reativado
-   */
-  async checkReactivatedPatients(vendasPorCliente) {
-    try {
-      // Busca pacientes inativos que ainda não foram reativados
-      const inativosResult = await db.query(`
-        SELECT cliente_id, cliente_nome, dias_sem_vir, total_investido
-        FROM pacientes_inativos
-        WHERE reativado_em IS NULL
-      `);
-
-      let reativados = 0;
-
-      for (const inativo of inativosResult.rows) {
-        const clienteAtual = vendasPorCliente.get(inativo.cliente_id);
-        if (!clienteAtual || !clienteAtual.ultima_visita) continue;
-
-        // Se o cliente tem uma visita nos últimos 60 dias, foi reativado
-        const hoje = new Date();
-        const diasDesdeUltimaVisita = Math.floor(
-          (hoje - clienteAtual.ultima_visita) / (1000 * 60 * 60 * 24)
-        );
-
-        if (diasDesdeUltimaVisita < 60) {
-          // Move para histórico
-          await db.query(`
-            INSERT INTO pacientes_inativos_historico
-              (cliente_id, cliente_nome, dias_inativo, total_investido_quando_inativo,
-               data_reativacao, data_nova_visita)
-            VALUES ($1, $2, $3, $4, NOW(), $5)
-          `, [
-            inativo.cliente_id,
-            inativo.cliente_nome,
-            inativo.dias_sem_vir,
-            inativo.total_investido,
-            format(clienteAtual.ultima_visita, 'yyyy-MM-dd'),
-          ]);
-
-          // Marca como reativado (não deleta, apenas marca)
-          await db.query(`
-            UPDATE pacientes_inativos
-            SET reativado_em = NOW()
-            WHERE cliente_id = $1
-          `, [inativo.cliente_id]);
-
-          reativados++;
-        }
-      }
-
-      if (reativados > 0) {
-        logger.info(`[InactivePatients] ${reativados} pacientes reativados (voltaram a comprar)`);
-      }
-
-      return { reativados };
-    } catch (error) {
-      logger.error('[InactivePatients] Erro ao verificar reativações:', error.message);
-      return { reativados: 0 };
     }
   }
 

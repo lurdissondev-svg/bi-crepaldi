@@ -15,20 +15,21 @@ class CustomerAnalyticsService {
     logger.info('[CustomerAnalytics] Iniciando atualização de métricas de clientes...');
 
     try {
-      // Busca dados agregados de vendas por cliente
+      // Busca dados agregados de contas a receber por cliente
       const clientesResult = await db.query(`
         SELECT
-          c.cod_cliente,
-          c.nome,
-          COUNT(v.id) as total_compras,
-          COALESCE(SUM(v.valor_total), 0) as total_gasto,
-          MIN(v.data_venda) as primeira_compra,
-          MAX(v.data_venda) as ultima_compra,
-          ROUND(COALESCE(AVG(v.valor_total), 0), 2) as ticket_medio
-        FROM clientes c
-        LEFT JOIN vendas v ON c.cod_cliente = v.cod_cliente
-        GROUP BY c.cod_cliente, c.nome
-        HAVING COUNT(v.id) > 0
+          cr.cod_cliente,
+          COALESCE(MAX(cr.raw_data->>'nome_cliente'), 'Cliente ' || cr.cod_cliente) as nome,
+          COUNT(cr.id) as total_compras,
+          COALESCE(SUM(cr.valor_liquido), 0) as total_gasto,
+          MIN(cr.dt_lancamento) as primeira_compra,
+          MAX(cr.dt_lancamento) as ultima_compra,
+          ROUND(COALESCE(AVG(cr.valor_liquido), 0), 2) as ticket_medio
+        FROM contas_receber cr
+        WHERE cr.cod_cliente IS NOT NULL
+          AND cr.valor_liquido > 0
+        GROUP BY cr.cod_cliente
+        HAVING COUNT(cr.id) > 0
       `);
 
       const clientes = clientesResult.rows;
@@ -339,7 +340,17 @@ class CustomerAnalyticsService {
         LIMIT $1
       `, [limit]);
 
-      return result.rows;
+      // Converte campos numéricos de string para number (PostgreSQL retorna NUMERIC como string)
+      return result.rows.map(row => ({
+        ...row,
+        total_compras: parseInt(row.total_compras) || 0,
+        total_gasto: parseFloat(row.total_gasto) || 0,
+        ticket_medio: parseFloat(row.ticket_medio) || 0,
+        dias_como_cliente: parseInt(row.dias_como_cliente) || 0,
+        frequencia_mensal: parseFloat(row.frequencia_mensal) || 0,
+        lifetime_value: parseFloat(row.lifetime_value) || 0,
+        predicted_ltv: parseFloat(row.predicted_ltv) || 0,
+      }));
     } catch (error) {
       logger.error('[CustomerAnalytics] Erro em getTopCustomersByLTV:', error.message);
       return [];
@@ -430,6 +441,228 @@ class CustomerAnalyticsService {
       return funnel;
     } catch (error) {
       logger.error('[CustomerAnalytics] Erro em getConversionFunnel:', error.message);
+      return [];
+    }
+  }
+
+
+  /**
+   * Retorna pacientes inativos (mais de X dias sem vir à clínica)
+   * @param {number} inactiveDays - Número de dias de inatividade (default: 120 = 4 meses)
+   * @param {number} limit - Limite de resultados
+   */
+  async getInactivePatients(inactiveDays = 120, limit = 50) {
+    try {
+      const result = await db.query(`
+        SELECT
+          cr.cod_cliente as cliente_id,
+          MAX(cr.raw_data->>'nome_cliente') as cliente_nome,
+          MAX(cr.dt_lancamento) as ultima_visita,
+          CURRENT_DATE - MAX(cr.dt_lancamento)::date as dias_sem_vir,
+          SUM(cr.valor_liquido) as total_investido,
+          COUNT(cr.id) as total_compras,
+          ROUND(AVG(cr.valor_liquido), 2) as ticket_medio
+        FROM contas_receber cr
+        WHERE cr.cod_cliente IS NOT NULL
+          AND cr.valor_liquido > 0
+        GROUP BY cr.cod_cliente
+        HAVING MAX(cr.dt_lancamento) < CURRENT_DATE - INTERVAL '${inactiveDays} days'
+        ORDER BY SUM(cr.valor_liquido) DESC
+        LIMIT $1
+      `, [limit]);
+
+      return result.rows;
+    } catch (error) {
+      logger.error('[CustomerAnalytics] Erro em getInactivePatients:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Retorna pacientes inativos com threshold dinâmico baseado nos dados disponíveis
+   * Usa percentil para determinar quem está "atrasado" comparado aos outros pacientes
+   * @param {number} percentile - Percentil de inatividade (default: 75 = top 25% mais inativos)
+   * @param {number} limit - Limite de resultados
+   */
+  async getInactivePatientsDynamic(percentile = 75, limit = 50) {
+    try {
+      // Primeiro, calcula o threshold dinâmico baseado no percentil
+      const thresholdResult = await db.query(`
+        WITH paciente_ultima_visita AS (
+          SELECT
+            cod_cliente,
+            MAX(dt_lancamento) as ultima_visita,
+            CURRENT_DATE - MAX(dt_lancamento)::date as dias_sem_vir
+          FROM contas_receber
+          WHERE cod_cliente IS NOT NULL AND valor_liquido > 0
+          GROUP BY cod_cliente
+        )
+        SELECT
+          PERCENTILE_CONT($1 / 100.0) WITHIN GROUP (ORDER BY dias_sem_vir) as threshold_days,
+          MIN(dias_sem_vir) as min_dias,
+          MAX(dias_sem_vir) as max_dias,
+          ROUND(AVG(dias_sem_vir), 0) as avg_dias,
+          COUNT(*) as total_pacientes
+        FROM paciente_ultima_visita
+      `, [percentile]);
+
+      const stats = thresholdResult.rows[0];
+      const thresholdDays = Math.floor(stats.threshold_days || 30);
+
+      // Busca pacientes acima do threshold
+      const result = await db.query(`
+        SELECT
+          cr.cod_cliente as cliente_id,
+          MAX(cr.raw_data->>'nome_cliente') as cliente_nome,
+          MAX(cr.dt_lancamento) as ultima_visita,
+          CURRENT_DATE - MAX(cr.dt_lancamento)::date as dias_sem_vir,
+          SUM(cr.valor_liquido) as total_investido,
+          COUNT(cr.id) as total_compras,
+          ROUND(AVG(cr.valor_liquido), 2) as ticket_medio
+        FROM contas_receber cr
+        WHERE cr.cod_cliente IS NOT NULL
+          AND cr.valor_liquido > 0
+        GROUP BY cr.cod_cliente
+        HAVING CURRENT_DATE - MAX(cr.dt_lancamento)::date >= $1
+        ORDER BY SUM(cr.valor_liquido) DESC
+        LIMIT $2
+      `, [thresholdDays, limit]);
+
+      return {
+        threshold_days: thresholdDays,
+        stats: {
+          min_dias: parseInt(stats.min_dias) || 0,
+          max_dias: parseInt(stats.max_dias) || 0,
+          avg_dias: parseInt(stats.avg_dias) || 0,
+          total_pacientes: parseInt(stats.total_pacientes) || 0,
+          percentile_used: percentile
+        },
+        patients: result.rows
+      };
+    } catch (error) {
+      logger.error('[CustomerAnalytics] Erro em getInactivePatientsDynamic:', error.message);
+      return { threshold_days: 0, stats: {}, patients: [] };
+    }
+  }
+
+  /**
+   * Retorna pacientes "atrasados" baseado em sua frequência histórica
+   * Ex: Paciente que vinha todo mês e está 2 meses sem vir
+   * @param {number} multiplier - Multiplicador da frequência (default: 2 = 2x o intervalo normal)
+   * @param {number} limit - Limite de resultados
+   */
+  async getPatientsOverdueForReturn(multiplier = 2, limit = 50) {
+    try {
+      const result = await db.query(`
+        WITH paciente_stats AS (
+          SELECT
+            cod_cliente,
+            MAX(raw_data->>'nome_cliente') as nome,
+            COUNT(*) as total_visitas,
+            MIN(dt_lancamento) as primeira_visita,
+            MAX(dt_lancamento) as ultima_visita,
+            SUM(valor_liquido) as total_investido,
+            ROUND(AVG(valor_liquido), 2) as ticket_medio,
+            -- Intervalo médio entre visitas em dias
+            CASE
+              WHEN COUNT(*) > 1 THEN
+                ROUND(
+                  EXTRACT(EPOCH FROM (MAX(dt_lancamento) - MIN(dt_lancamento))) /
+                  NULLIF(COUNT(*) - 1, 0) / 86400
+                )
+              ELSE 30 -- Assume 30 dias para pacientes com 1 visita
+            END as intervalo_medio_dias
+          FROM contas_receber
+          WHERE cod_cliente IS NOT NULL AND valor_liquido > 0
+          GROUP BY cod_cliente
+          HAVING COUNT(*) >= 1
+        )
+        SELECT
+          cod_cliente as cliente_id,
+          nome as cliente_nome,
+          ultima_visita,
+          CURRENT_DATE - ultima_visita::date as dias_sem_vir,
+          intervalo_medio_dias,
+          ROUND((CURRENT_DATE - ultima_visita::date)::numeric / NULLIF(intervalo_medio_dias, 0), 1) as atraso_multiplicador,
+          total_visitas,
+          total_investido,
+          ticket_medio,
+          -- Classificação de urgência
+          CASE
+            WHEN (CURRENT_DATE - ultima_visita::date) >= intervalo_medio_dias * 3 THEN 'critico'
+            WHEN (CURRENT_DATE - ultima_visita::date) >= intervalo_medio_dias * 2 THEN 'alto'
+            WHEN (CURRENT_DATE - ultima_visita::date) >= intervalo_medio_dias * 1.5 THEN 'medio'
+            ELSE 'baixo'
+          END as urgencia
+        FROM paciente_stats
+        WHERE (CURRENT_DATE - ultima_visita::date) >= intervalo_medio_dias * $1
+          AND total_visitas >= 2 -- Pacientes com histórico
+        ORDER BY total_investido DESC, atraso_multiplicador DESC
+        LIMIT $2
+      `, [multiplier, limit]);
+
+      return result.rows;
+    } catch (error) {
+      logger.error('[CustomerAnalytics] Erro em getPatientsOverdueForReturn:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Retorna resumo de pacientes em risco de churn
+   */
+  async getChurnRiskSummary() {
+    try {
+      const result = await db.query(`
+        WITH paciente_stats AS (
+          SELECT
+            cod_cliente,
+            COUNT(*) as total_visitas,
+            MAX(dt_lancamento) as ultima_visita,
+            SUM(valor_liquido) as total_investido,
+            CASE
+              WHEN COUNT(*) > 1 THEN
+                ROUND(
+                  EXTRACT(EPOCH FROM (MAX(dt_lancamento) - MIN(dt_lancamento))) /
+                  NULLIF(COUNT(*) - 1, 0) / 86400
+                )
+              ELSE 30
+            END as intervalo_medio_dias
+          FROM contas_receber
+          WHERE cod_cliente IS NOT NULL AND valor_liquido > 0
+          GROUP BY cod_cliente
+        ),
+        risco AS (
+          SELECT
+            cod_cliente,
+            total_investido,
+            CASE
+              WHEN (CURRENT_DATE - ultima_visita::date) >= intervalo_medio_dias * 3 THEN 'critico'
+              WHEN (CURRENT_DATE - ultima_visita::date) >= intervalo_medio_dias * 2 THEN 'alto'
+              WHEN (CURRENT_DATE - ultima_visita::date) >= intervalo_medio_dias * 1.5 THEN 'medio'
+              ELSE 'ativo'
+            END as nivel_risco
+          FROM paciente_stats
+          WHERE total_visitas >= 2
+        )
+        SELECT
+          nivel_risco,
+          COUNT(*) as quantidade,
+          SUM(total_investido) as valor_total_risco
+        FROM risco
+        GROUP BY nivel_risco
+        ORDER BY
+          CASE nivel_risco
+            WHEN 'critico' THEN 1
+            WHEN 'alto' THEN 2
+            WHEN 'medio' THEN 3
+            ELSE 4
+          END
+      `);
+
+      return result.rows;
+    } catch (error) {
+      logger.error('[CustomerAnalytics] Erro em getChurnRiskSummary:', error.message);
       return [];
     }
   }

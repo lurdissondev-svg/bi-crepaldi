@@ -7,10 +7,8 @@ import {
   Users,
   Target,
   UserCheck,
-  FolderOpen,
   ChevronLeft,
   Settings,
-  Sparkles,
   HelpCircle,
 } from 'lucide-react';
 import { cn } from '../../utils/cn';
@@ -28,7 +26,6 @@ const navItems: NavItem[] = [
   { name: 'Marketing', path: '/marketing', icon: <TrendingUp size={20} /> },
   { name: 'Comercial', path: '/comercial', icon: <ShoppingCart size={20} /> },
   { name: 'Atendimento', path: '/atendimento', icon: <UserCheck size={20} /> },
-  { name: 'Adm. Financeiro', path: '/administrativo', icon: <FolderOpen size={20} /> },
   { name: 'Quadro de Metas', path: '/metas', icon: <Target size={20} /> },
   { name: 'Pacientes', path: '/pacientes', icon: <Users size={20} /> },
 ];
@@ -54,8 +51,8 @@ export function Sidebar({ isOpen, onToggle }: SidebarProps) {
       {/* Logo */}
       <div className="flex items-center h-16 px-4 border-b border-[var(--color-border-primary)]">
         <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg shadow-indigo-500/20">
-            <Sparkles size={20} className="text-white" />
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 overflow-hidden">
+            <img src="/logo.png" alt="Grupo Crepaldi" className="w-full h-full object-contain" />
           </div>
           {isOpen && (
             <div className="min-w-0 animate-fade-in">

@@ -17,6 +17,10 @@ import type {
   ReturningCustomerStats,
   RFMSegment,
   TopCustomerByLTV,
+  InactivePatient,
+  InactivePatientsDynamicResponse,
+  PatientsOverdueResponse,
+  ChurnRiskSummaryResponse,
   MarketingROIData,
   SpendTrendData,
   MetaAdsSummary,
@@ -158,6 +162,53 @@ class ApiService {
     const response = await this.client.get<ApiResponse<TopCustomerByLTV[]>>(
       '/dashboard/top-customers-ltv',
       { params: { limit } }
+    );
+    return response.data.data;
+  }
+
+  async getInactivePatients(days: number = 120, limit: number = 50): Promise<InactivePatient[]> {
+    const response = await this.client.get<ApiResponse<InactivePatient[]>>(
+      '/dashboard/inactive-patients',
+      { params: { days, limit } }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Busca pacientes inativos usando threshold dinâmico baseado em percentil.
+   * Funciona mesmo com períodos curtos de dados (adapta automaticamente).
+   * @param percentile - Percentil para calcular o threshold (ex: 75 = top 25% mais inativos)
+   * @param limit - Limite de resultados
+   */
+  async getInactivePatientsDynamic(percentile: number = 75, limit: number = 50): Promise<InactivePatientsDynamicResponse> {
+    const response = await this.client.get<ApiResponse<InactivePatientsDynamicResponse>>(
+      '/dashboard/inactive-patients-dynamic',
+      { params: { percentile, limit } }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Busca pacientes com atraso baseado na frequência histórica de visitas.
+   * Identifica quem está "atrasado" em relação ao seu padrão normal.
+   * @param multiplier - Multiplicador do intervalo médio (ex: 2 = dobro do tempo normal)
+   * @param limit - Limite de resultados
+   */
+  async getPatientsOverdue(multiplier: number = 2, limit: number = 50): Promise<PatientsOverdueResponse> {
+    const response = await this.client.get<ApiResponse<PatientsOverdueResponse>>(
+      '/dashboard/patients-overdue',
+      { params: { multiplier, limit } }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna resumo de risco de churn agrupado por nível.
+   * Útil para KPIs de retenção.
+   */
+  async getChurnRiskSummary(): Promise<ChurnRiskSummaryResponse> {
+    const response = await this.client.get<ApiResponse<ChurnRiskSummaryResponse>>(
+      '/dashboard/churn-risk-summary'
     );
     return response.data.data;
   }

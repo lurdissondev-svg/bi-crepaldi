@@ -16,6 +16,7 @@ class SyncService {
   constructor() {
     this.isRunning = false;
     this.intervalId = null;
+    this.inactivePatientsIntervalId = null; // Timer separado para pacientes inativos (15 min)
     this.syncQueue = [];
     this.lastSyncAt = null;
     this.nextSyncAt = null;
@@ -47,16 +48,32 @@ class SyncService {
     }
 
     const intervalMs = config.sync.intervalMinutes * 60 * 1000;
+    const inactivePatientsIntervalMs = 15 * 60 * 1000; // 15 minutos
 
     logger.info(`Iniciando sync job a cada ${config.sync.intervalMinutes} minutos`);
+    logger.info(`Iniciando sync de pacientes inativos a cada 15 minutos`);
 
     // Executa imediatamente na primeira vez
     this.runFullSync();
 
-    // Configura o intervalo
+    // Executa sync de pacientes inativos após 30 segundos (para não sobrecarregar no início)
+    setTimeout(() => {
+      this.syncInactivePatients().catch(err =>
+        logger.error('[InactivePatients] Erro no sync inicial:', err.message)
+      );
+    }, 30000);
+
+    // Configura o intervalo principal (5 min)
     this.intervalId = setInterval(() => {
       this.runFullSync();
     }, intervalMs);
+
+    // Configura o intervalo de pacientes inativos (15 min)
+    this.inactivePatientsIntervalId = setInterval(() => {
+      this.syncInactivePatients().catch(err =>
+        logger.error('[InactivePatients] Erro no sync agendado:', err.message)
+      );
+    }, inactivePatientsIntervalMs);
   }
 
   /**
@@ -75,6 +92,11 @@ class SyncService {
       clearInterval(this.intervalId);
       this.intervalId = null;
       logger.info('Sync job parado');
+    }
+    if (this.inactivePatientsIntervalId) {
+      clearInterval(this.inactivePatientsIntervalId);
+      this.inactivePatientsIntervalId = null;
+      logger.info('Sync de pacientes inativos parado');
     }
   }
 
@@ -828,6 +850,271 @@ class SyncService {
     logger.debug('Leads diário atualizado');
   }
 
+  // ==================== SYNC PACIENTES INATIVOS ====================
+
+  /**
+   * Sincroniza tabela de pacientes inativos
+   * Executa a cada 15 minutos (separado do sync principal de 5 min)
+   * Dados desde 01/01/2024 até hoje
+   */
+  async syncInactivePatients() {
+    const logId = await this.startSyncLog('pacientes_inativos', 'full_sync');
+    const timer = startTimer('Inactive Patients Sync');
+
+    try {
+      logger.info('[InactivePatients] Iniciando sync de pacientes inativos...');
+
+      // Período: desde 01/01/2024 até hoje
+      const dataInicio = '2024-01-01';
+      const dataFim = format(new Date(), 'yyyy-MM-dd');
+
+      // Busca todas as vendas do período para calcular última visita por cliente
+      const chunks = belleService.dividePeriodoEmChunks(dataInicio, dataFim);
+      const vendasPorCliente = new Map();
+
+      logger.info(`[InactivePatients] Buscando vendas em ${chunks.length} chunks (${dataInicio} a ${dataFim})`);
+
+      // Busca vendas de cada chunk e estabelecimento
+      for (const chunk of chunks) {
+        const resultados = await belleService.getVendasTodosEstabelecimentos(chunk.inicio, chunk.fim);
+
+        for (const resultado of resultados) {
+          const vendas = resultado.data || [];
+
+          for (const venda of vendas) {
+            const clienteId = parseInt(venda.cod_cliente);
+            if (!clienteId) continue;
+
+            const dataVenda = venda.data_venda ? new Date(venda.data_venda) : null;
+            const valorVenda = parseFloat(venda.valor_venda) || 0;
+
+            if (!vendasPorCliente.has(clienteId)) {
+              vendasPorCliente.set(clienteId, {
+                cliente_id: clienteId,
+                cliente_nome: `Cliente ${clienteId}`,
+                cod_estab: resultado.codestab,
+                ultima_visita: dataVenda,
+                total_investido: 0,
+                total_compras: 0,
+                vendas_datas: [],
+              });
+            }
+
+            const cliente = vendasPorCliente.get(clienteId);
+            cliente.total_investido += valorVenda;
+            cliente.total_compras += 1;
+
+            if (dataVenda) {
+              cliente.vendas_datas.push(dataVenda);
+              if (!cliente.ultima_visita || dataVenda > cliente.ultima_visita) {
+                cliente.ultima_visita = dataVenda;
+              }
+            }
+          }
+        }
+      }
+
+      logger.info(`[InactivePatients] ${vendasPorCliente.size} clientes encontrados com vendas`);
+
+      // Tenta buscar nomes dos clientes do banco (se existir tabela clientes)
+      try {
+        const clientesResult = await db.query(`
+          SELECT cod_cliente, nome, telefone, celular, email
+          FROM clientes
+          WHERE cod_cliente = ANY($1)
+        `, [Array.from(vendasPorCliente.keys())]);
+
+        for (const cliente of clientesResult.rows) {
+          const data = vendasPorCliente.get(cliente.cod_cliente);
+          if (data) {
+            data.cliente_nome = cliente.nome || data.cliente_nome;
+            data.telefone = cliente.telefone;
+            data.celular = cliente.celular;
+            data.email = cliente.email;
+          }
+        }
+      } catch (e) {
+        logger.debug('[InactivePatients] Tabela clientes não disponível, usando IDs');
+      }
+
+      // Calcula dias sem vir e define nível de risco
+      const hoje = new Date();
+      const pacientesInativos = [];
+
+      for (const [, cliente] of vendasPorCliente) {
+        if (!cliente.ultima_visita) continue;
+
+        const diasSemVir = Math.floor((hoje - cliente.ultima_visita) / (1000 * 60 * 60 * 24));
+
+        // Considera inativo quem não vem há mais de 60 dias
+        if (diasSemVir < 60) continue;
+
+        // Define nível de risco
+        let nivelRisco = 'baixo'; // 60-89 dias
+        if (diasSemVir >= 180) nivelRisco = 'critico';
+        else if (diasSemVir >= 120) nivelRisco = 'alto';
+        else if (diasSemVir >= 90) nivelRisco = 'medio';
+
+        const ticketMedio = cliente.total_compras > 0
+          ? cliente.total_investido / cliente.total_compras
+          : 0;
+
+        pacientesInativos.push({
+          cliente_id: cliente.cliente_id,
+          cliente_nome: cliente.cliente_nome,
+          cod_estab: cliente.cod_estab,
+          telefone: cliente.telefone || null,
+          celular: cliente.celular || null,
+          email: cliente.email || null,
+          ultima_visita: format(cliente.ultima_visita, 'yyyy-MM-dd'),
+          dias_sem_vir: diasSemVir,
+          total_investido: cliente.total_investido,
+          total_compras: cliente.total_compras,
+          ticket_medio: ticketMedio,
+          nivel_risco: nivelRisco,
+        });
+      }
+
+      logger.info(`[InactivePatients] ${pacientesInativos.length} pacientes inativos identificados (60+ dias)`);
+
+      // Primeiro, verifica se algum paciente inativo agendou/voltou
+      // (tem venda mais recente que a última atualização)
+      await this.checkReactivatedPatients(vendasPorCliente);
+
+      // Upsert dos pacientes inativos
+      let inserted = 0;
+      let updated = 0;
+
+      for (const paciente of pacientesInativos) {
+        try {
+          const result = await db.query(`
+            INSERT INTO pacientes_inativos
+              (cliente_id, cliente_nome, cod_estab, telefone, celular, email,
+               ultima_visita, dias_sem_vir, total_investido, total_compras,
+               ticket_medio, nivel_risco, data_atualizacao)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+            ON CONFLICT (cliente_id)
+            DO UPDATE SET
+              cliente_nome = EXCLUDED.cliente_nome,
+              telefone = EXCLUDED.telefone,
+              celular = EXCLUDED.celular,
+              email = EXCLUDED.email,
+              ultima_visita = EXCLUDED.ultima_visita,
+              dias_sem_vir = EXCLUDED.dias_sem_vir,
+              total_investido = EXCLUDED.total_investido,
+              total_compras = EXCLUDED.total_compras,
+              ticket_medio = EXCLUDED.ticket_medio,
+              nivel_risco = EXCLUDED.nivel_risco,
+              data_atualizacao = NOW()
+            WHERE pacientes_inativos.reativado_em IS NULL
+            RETURNING (xmax = 0) AS is_insert
+          `, [
+            paciente.cliente_id,
+            paciente.cliente_nome,
+            paciente.cod_estab,
+            paciente.telefone,
+            paciente.celular,
+            paciente.email,
+            paciente.ultima_visita,
+            paciente.dias_sem_vir,
+            paciente.total_investido,
+            paciente.total_compras,
+            paciente.ticket_medio,
+            paciente.nivel_risco,
+          ]);
+
+          if (result.rows[0]?.is_insert) {
+            inserted++;
+          } else if (result.rowCount > 0) {
+            updated++;
+          }
+        } catch (error) {
+          logger.debug(`[InactivePatients] Erro ao inserir paciente ${paciente.cliente_id}: ${error.message}`);
+        }
+      }
+
+      await this.finishSyncLog(logId, 'success', {
+        records_fetched: vendasPorCliente.size,
+        records_inserted: inserted,
+        records_updated: updated,
+        date_from: dataInicio,
+        date_to: dataFim,
+      });
+
+      timer({ status: 'success', inactive: pacientesInativos.length, inserted, updated });
+      logger.info(`[InactivePatients] Sync finalizado: ${inserted} novos, ${updated} atualizados`);
+
+      return { inserted, updated, total: pacientesInativos.length };
+    } catch (error) {
+      await this.finishSyncLog(logId, 'error', {}, error.message);
+      timer({ status: 'error' });
+      logger.error('[InactivePatients] Erro no sync:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Verifica pacientes que foram reativados (voltaram a comprar)
+   * Move para histórico e marca como reativado
+   */
+  async checkReactivatedPatients(vendasPorCliente) {
+    try {
+      // Busca pacientes inativos que ainda não foram reativados
+      const inativosResult = await db.query(`
+        SELECT cliente_id, cliente_nome, dias_sem_vir, total_investido
+        FROM pacientes_inativos
+        WHERE reativado_em IS NULL
+      `);
+
+      let reativados = 0;
+
+      for (const inativo of inativosResult.rows) {
+        const clienteAtual = vendasPorCliente.get(inativo.cliente_id);
+        if (!clienteAtual || !clienteAtual.ultima_visita) continue;
+
+        // Se o cliente tem uma visita nos últimos 60 dias, foi reativado
+        const hoje = new Date();
+        const diasDesdeUltimaVisita = Math.floor(
+          (hoje - clienteAtual.ultima_visita) / (1000 * 60 * 60 * 24)
+        );
+
+        if (diasDesdeUltimaVisita < 60) {
+          // Move para histórico
+          await db.query(`
+            INSERT INTO pacientes_inativos_historico
+              (cliente_id, cliente_nome, dias_inativo, total_investido_quando_inativo,
+               data_reativacao, data_nova_visita)
+            VALUES ($1, $2, $3, $4, NOW(), $5)
+          `, [
+            inativo.cliente_id,
+            inativo.cliente_nome,
+            inativo.dias_sem_vir,
+            inativo.total_investido,
+            format(clienteAtual.ultima_visita, 'yyyy-MM-dd'),
+          ]);
+
+          // Marca como reativado (não deleta, apenas marca)
+          await db.query(`
+            UPDATE pacientes_inativos
+            SET reativado_em = NOW()
+            WHERE cliente_id = $1
+          `, [inativo.cliente_id]);
+
+          reativados++;
+        }
+      }
+
+      if (reativados > 0) {
+        logger.info(`[InactivePatients] ${reativados} pacientes reativados (voltaram a comprar)`);
+      }
+
+      return { reativados };
+    } catch (error) {
+      logger.error('[InactivePatients] Erro ao verificar reativações:', error.message);
+      return { reativados: 0 };
+    }
+  }
+
   // ==================== HELPERS ====================
 
   async startSyncLog(entityType, operation) {
@@ -1062,6 +1349,265 @@ class SyncService {
       seen.add(key);
       return true;
     });
+  }
+
+  // ==================== BACKFILL HISTÓRICO ====================
+
+  /**
+   * Executa backfill de dados históricos de um período específico
+   * Útil para importar dados que não foram sincronizados anteriormente
+   * @param {string} dataInicio - Data de início (yyyy-MM-dd)
+   * @param {string} dataFim - Data de fim (yyyy-MM-dd)
+   * @param {string[]} entities - Entidades para sincronizar ['contas_receber', 'vendas']
+   */
+  async runBackfill(dataInicio, dataFim, entities = ['contas_receber', 'vendas']) {
+    const timer = startTimer('Backfill Histórico');
+    const results = {
+      contas_receber: { fetched: 0, inserted: 0, updated: 0 },
+      vendas: { fetched: 0, inserted: 0, updated: 0 },
+      faturamento_diario: { updated: 0 },
+    };
+
+    logger.info(`[Backfill] Iniciando backfill de ${dataInicio} a ${dataFim}`);
+    logger.info(`[Backfill] Entidades: ${entities.join(', ')}`);
+
+    try {
+      // Backfill de contas_receber
+      if (entities.includes('contas_receber')) {
+        const contasResult = await this.backfillContasReceber(dataInicio, dataFim);
+        results.contas_receber = contasResult;
+      }
+
+      // Backfill de vendas
+      if (entities.includes('vendas')) {
+        const vendasResult = await this.backfillVendas(dataInicio, dataFim);
+        results.vendas = vendasResult;
+      }
+
+      // Atualiza faturamento_diario com os novos dados
+      await this.updateFaturamentoDiarioFromBackfill(dataInicio, dataFim);
+      results.faturamento_diario.updated = 1;
+
+      timer({ status: 'success' });
+      logger.info(`[Backfill] Concluído com sucesso`, results);
+
+      return {
+        success: true,
+        period: { from: dataInicio, to: dataFim },
+        results,
+      };
+    } catch (error) {
+      timer({ status: 'error' });
+      logger.error(`[Backfill] Erro:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Backfill de contas_receber para um período específico
+   */
+  async backfillContasReceber(dataInicio, dataFim) {
+    const logId = await this.startSyncLog('contas_receber', 'backfill');
+
+    try {
+      // Divide o período em chunks de 3 meses
+      const chunks = belleService.dividePeriodoEmChunks(dataInicio, dataFim);
+
+      let totalFetched = 0;
+      let inserted = 0;
+      let updated = 0;
+
+      logger.info(`[Backfill] Contas a receber: ${chunks.length} chunks`);
+
+      for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+        const chunk = chunks[chunkIdx];
+        logger.info(`[Backfill] Processando chunk ${chunkIdx + 1}/${chunks.length}: ${chunk.inicio} a ${chunk.fim}`);
+
+        const resultados = await belleService.getContasReceberTodosEstabelecimentos(
+          chunk.inicio, chunk.fim, 'lancamento'
+        );
+
+        for (const resultado of resultados) {
+          const dados = resultado.data || [];
+          totalFetched += dados.length;
+
+          if (!Array.isArray(dados) || dados.length === 0) continue;
+
+          const records = dados.map(conta => ({
+            cod_conta: parseInt(conta.cod_movimento) || 0,
+            cod_estab: resultado.codestab,
+            cod_cliente: parseInt(conta.cod_cliente) || null,
+            cod_venda: parseInt(conta.id_venda_relacionada) || null,
+            valor_bruto: parseFloat(conta.valor_bruto) || 0,
+            valor_liquido: parseFloat(conta.valor_liquido) || 0,
+            valor_pago: parseFloat(conta.valor_pago) || 0,
+            cod_forma_pagamento: parseInt(conta.cod_forma_pagamento) || null,
+            nome_forma_pagamento: conta.nome_forma_pagamento || null,
+            dt_lancamento: this.parseBelleDate(conta.dt_lancamento),
+            dt_vencimento: this.parseBelleDate(conta.dt_vencimento),
+            dt_pagamento: this.parseBelleDate(conta.dt_pagamento),
+            confirmado: conta.confirmado || 'N',
+            status: conta.status || null,
+            raw_data: JSON.stringify(conta),
+            synced_at: new Date().toISOString(),
+          })).filter(r => r.cod_conta > 0);
+
+          const uniqueRecords = this.deduplicateByKeys(records, ['cod_conta', 'cod_estab']);
+
+          for (let i = 0; i < uniqueRecords.length; i += 500) {
+            const batch = uniqueRecords.slice(i, i + 500);
+            const result = await this.upsertContasReceber(batch);
+            inserted += result.inserted;
+            updated += result.updated;
+          }
+        }
+
+        logger.info(`[Backfill] Chunk ${chunkIdx + 1} concluído: ${totalFetched} registros até agora`);
+      }
+
+      await this.finishSyncLog(logId, 'success', {
+        records_fetched: totalFetched,
+        records_inserted: inserted,
+        records_updated: updated,
+        date_from: dataInicio,
+        date_to: dataFim,
+      });
+
+      logger.info(`[Backfill] Contas a receber: ${totalFetched} buscados, ${inserted} inseridos, ${updated} atualizados`);
+
+      return { fetched: totalFetched, inserted, updated };
+    } catch (error) {
+      await this.finishSyncLog(logId, 'error', {}, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Backfill de vendas para um período específico
+   */
+  async backfillVendas(dataInicio, dataFim) {
+    const logId = await this.startSyncLog('vendas', 'backfill');
+
+    try {
+      const chunks = belleService.dividePeriodoEmChunks(dataInicio, dataFim);
+
+      let totalFetched = 0;
+      let inserted = 0;
+      let updated = 0;
+
+      logger.info(`[Backfill] Vendas: ${chunks.length} chunks`);
+
+      for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+        const chunk = chunks[chunkIdx];
+        logger.info(`[Backfill] Processando chunk ${chunkIdx + 1}/${chunks.length}: ${chunk.inicio} a ${chunk.fim}`);
+
+        const resultados = await belleService.getVendasTodosEstabelecimentos(chunk.inicio, chunk.fim);
+
+        for (const resultado of resultados) {
+          const vendas = resultado.data || [];
+          totalFetched += vendas.length;
+
+          const records = vendas.map(venda => ({
+            cod_venda: parseInt(venda.id_venda) || 0,
+            cod_estab: resultado.codestab,
+            cod_cliente: parseInt(venda.cod_cliente) || null,
+            valor_venda: parseFloat(venda.valor_venda) || 0,
+            valor_desconto: parseFloat(venda.valor_desconto) || 0,
+            valor_liquido: parseFloat(venda.valor_liquido) || parseFloat(venda.valor_venda) || 0,
+            data_venda: venda.data_venda || null,
+            cod_profissional: parseInt(venda.cod_profissional) || null,
+            nome_profissional: venda.nome_profissional || null,
+            status: venda.itens_venda?.[0]?.status || null,
+            confirmado: 'S',
+            raw_data: JSON.stringify(venda),
+            synced_at: new Date().toISOString(),
+          })).filter(r => r.cod_venda > 0);
+
+          const uniqueRecords = this.deduplicateByKeys(records, ['cod_venda', 'cod_estab']);
+
+          for (let i = 0; i < uniqueRecords.length; i += 500) {
+            const batch = uniqueRecords.slice(i, i + 500);
+            const result = await this.upsertVendas(batch);
+            inserted += result.inserted;
+            updated += result.updated;
+          }
+        }
+
+        logger.info(`[Backfill] Chunk ${chunkIdx + 1} concluído: ${totalFetched} registros até agora`);
+      }
+
+      await this.finishSyncLog(logId, 'success', {
+        records_fetched: totalFetched,
+        records_inserted: inserted,
+        records_updated: updated,
+        date_from: dataInicio,
+        date_to: dataFim,
+      });
+
+      logger.info(`[Backfill] Vendas: ${totalFetched} buscados, ${inserted} inseridos, ${updated} atualizados`);
+
+      return { fetched: totalFetched, inserted, updated };
+    } catch (error) {
+      await this.finishSyncLog(logId, 'error', {}, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Atualiza faturamento_diario a partir dos dados do banco
+   */
+  async updateFaturamentoDiarioFromBackfill(dataInicio, dataFim) {
+    logger.info(`[Backfill] Atualizando faturamento_diario de ${dataInicio} a ${dataFim}`);
+
+    const query = `
+      WITH dados_diarios AS (
+        SELECT
+          dt_lancamento::date as data_ref,
+          cod_estab,
+          SUM(CASE WHEN confirmado = 'S' THEN valor_bruto ELSE 0 END) as valor_total,
+          COUNT(CASE WHEN confirmado = 'S' THEN 1 END) as quantidade_movimentos,
+          CASE
+            WHEN COUNT(CASE WHEN confirmado = 'S' THEN 1 END) > 0
+            THEN SUM(CASE WHEN confirmado = 'S' THEN valor_bruto ELSE 0 END) / COUNT(CASE WHEN confirmado = 'S' THEN 1 END)
+            ELSE 0
+          END as ticket_medio
+        FROM contas_receber
+        WHERE dt_lancamento >= $1 AND dt_lancamento <= $2
+        GROUP BY dt_lancamento::date, cod_estab
+      )
+      INSERT INTO faturamento_diario (
+        data_referencia, cod_estab, valor_total,
+        quantidade_movimentos, ticket_medio, calculated_at
+      )
+      SELECT
+        data_ref,
+        cod_estab,
+        valor_total,
+        quantidade_movimentos,
+        ticket_medio,
+        NOW()
+      FROM dados_diarios
+      ON CONFLICT (data_referencia, cod_estab)
+      DO UPDATE SET
+        valor_total = EXCLUDED.valor_total,
+        quantidade_movimentos = EXCLUDED.quantidade_movimentos,
+        ticket_medio = EXCLUDED.ticket_medio,
+        calculated_at = NOW()
+    `;
+
+    await db.query(query, [dataInicio, dataFim]);
+    logger.info(`[Backfill] Faturamento diário atualizado`);
+  }
+
+  /**
+   * Backfill rápido do ano atual (2025)
+   */
+  async backfillCurrentYear() {
+    const anoAtual = new Date().getFullYear();
+    const dataInicio = `${anoAtual}-01-01`;
+    const dataFim = format(new Date(), 'yyyy-MM-dd');
+
+    return this.runBackfill(dataInicio, dataFim);
   }
 
   // ==================== STATUS ====================

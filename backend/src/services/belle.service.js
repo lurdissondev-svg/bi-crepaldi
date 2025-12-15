@@ -112,10 +112,17 @@ class BelleService {
       // Se já estiver no formato dd/mm/yyyy, retorna
       if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) return dateStr;
 
-      // Se estiver no formato yyyy-MM-dd (ISO), converte diretamente sem usar Date()
-      // para evitar problemas de timezone
+      // Se estiver no formato yyyy-MM-dd (ISO simples), converte diretamente
       if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
         const [year, month, day] = dateStr.split('-');
+        return `${day}/${month}/${year}`;
+      }
+
+      // Se estiver no formato ISO completo com timezone (2025-12-01T00:00:00-03:00)
+      // Extrai apenas a parte yyyy-MM-dd para evitar problemas de timezone
+      if (/^\d{4}-\d{2}-\d{2}T/.test(dateStr)) {
+        const [datePart] = dateStr.split('T');
+        const [year, month, day] = datePart.split('-');
         return `${day}/${month}/${year}`;
       }
 
@@ -532,6 +539,16 @@ class BelleService {
           faturamentoPorEstabelecimento[codestab].valor += valor;
           faturamentoPorEstabelecimento[codestab].quantidade++;
 
+          // Agrupar por profissional (do nível da venda)
+          const profNome = venda.nome_profissional || venda.profissional || venda.vendedor || null;
+          if (profNome) {
+            if (!profissionaisMap[profNome]) {
+              profissionaisMap[profNome] = { nome: profNome, vendas: 0, valor: 0 };
+            }
+            profissionaisMap[profNome].vendas++;
+            profissionaisMap[profNome].valor += valor;
+          }
+
           // Agrupar por procedimento/item
           if (venda.itens_venda && Array.isArray(venda.itens_venda)) {
             venda.itens_venda.forEach(item => {
@@ -542,6 +559,16 @@ class BelleService {
               }
               procedimentosMap[procNome].quantidade++;
               procedimentosMap[procNome].valor += valorItem;
+
+              // Se o item tiver profissional, também contabiliza
+              const itemProf = item.nome_profissional || item.profissional || null;
+              if (itemProf && !profNome) {
+                if (!profissionaisMap[itemProf]) {
+                  profissionaisMap[itemProf] = { nome: itemProf, vendas: 0, valor: 0 };
+                }
+                profissionaisMap[itemProf].vendas++;
+                profissionaisMap[itemProf].valor += valorItem;
+              }
             });
           }
 
@@ -695,15 +722,357 @@ class BelleService {
       const response = await this.client.get('/profissionais', {
         params: { codEstab: this.estabelecimentos[0] }
       });
-      return { data: response.data || [] };
+      if (response.data && response.data.length > 0) {
+        return { data: response.data };
+      }
     } catch (error) {
-      logger.debug('Endpoint /profissionais não disponível, usando dados locais');
-      // Retorna lista vazia como fallback (profissionais seriam extraídos das vendas)
+      logger.debug('Endpoint /profissionais não disponível:', error.message);
+    }
+
+    // Fallback: extrair profissionais únicos das contas a receber (últimos 3 meses)
+    try {
+      const hoje = new Date();
+      const tresMesesAtras = new Date();
+      tresMesesAtras.setMonth(tresMesesAtras.getMonth() - 3);
+
+      const dataInicio = format(tresMesesAtras, 'yyyy-MM-dd');
+      const dataFim = format(hoje, 'yyyy-MM-dd');
+
+      const profissionaisSet = new Set();
+
+      // Buscar de todos estabelecimentos
+      for (const codEstab of this.estabelecimentos) {
+        const dados = await this.getContasReceber(codEstab, dataInicio, dataFim, 'lancamento');
+        if (Array.isArray(dados)) {
+          dados.forEach(movimento => {
+            const prof = movimento.nome_profissional || movimento.profissional;
+            if (prof && prof.trim()) {
+              profissionaisSet.add(prof.trim());
+            }
+          });
+        }
+      }
+
+      const profissionaisArray = Array.from(profissionaisSet).map((nome, idx) => ({
+        id: idx + 1,
+        nome,
+      }));
+
+      logger.info(`[Belle] Extraídos ${profissionaisArray.length} profissionais das contas a receber`);
+      return { data: profissionaisArray };
+    } catch (fallbackError) {
+      logger.warn('Fallback de profissionais também falhou:', fallbackError.message);
       return { data: [] };
     }
   }
 
+  // ==================== RELATÓRIOS ESPECIAIS ====================
+
+  /**
+   * Busca movimentação detalhada (serviços, produtos, etc)
+   * Este endpoint tem o campo 'responsavel' que permite filtrar por profissional
+   */
+  async getMovimentacaoDetalhado(codEstab, dataInicio, dataFim) {
+    try {
+      const dtInicio = this.formatDateBelle(dataInicio);
+      const dtFim = this.formatDateBelle(dataFim);
+
+      const data = await this.cachedRequest('/relatorios/movimentacao_detalhado', {
+        codEstab,
+        tipoPeriodo: 'Lançamento', // Com cedilha - valor correto da API
+        dtInicio,
+        dtFim,
+        tipoMovimento: 'Entrada',
+        situacao: 'Confirmado', // Parâmetro obrigatório
+        // Filtros de origem - especifica quais tipos de movimentação incluir
+        origemServico: 1, // Serviços
+        origemPlano: 0, // Planos (0 pois temos endpoint separado)
+        origemProduto: 1, // Produtos
+        origemCRE: 1, // Contas a receber
+        origemOutrasVendas: 1, // Outras vendas
+      });
+      return data || [];
+    } catch (error) {
+      logger.error(`Erro ao buscar movimentacao detalhado (estab ${codEstab}):`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca vendas de planos
+   * Este endpoint tem o campo 'indicacao' que permite filtrar por profissional
+   */
+  async getVendaPlanos(codEstab, dataInicio, dataFim) {
+    try {
+      const dtInicio = this.formatDateBelle(dataInicio);
+      const dtFim = this.formatDateBelle(dataFim);
+
+      const data = await this.cachedRequest('/venda_planos', {
+        codEstab,
+        tipoPeriodo: 'DataVenda',
+        dtInicio,
+        dtFim,
+        statusPlano: 'Aprovado',
+      });
+      return data || [];
+    } catch (error) {
+      logger.error(`Erro ao buscar venda planos (estab ${codEstab}):`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Converte valor do formato brasileiro (1.234,56) para número
+   */
+  parseBrazilianNumber(value) {
+    if (typeof value === 'number') return value;
+    if (!value) return 0;
+    // Remove pontos de milhar e substitui vírgula por ponto decimal
+    const cleaned = String(value).replace(/\./g, '').replace(',', '.');
+    return parseFloat(cleaned) || 0;
+  }
+
+  /**
+   * Busca faturamento de Dermato filtrado por profissional
+   * Usa dois endpoints: movimentacao_detalhado (responsavel) e venda_planos (indicacao)
+   */
+  async getFaturamentoDermatoPorProfissional(dataInicio, dataFim, profissionalFiltro) {
+    const dermatoCodestab = config.metas.spa.dermatoCodestab; // 1
+
+    // Divide o período em chunks de 3 meses (limite da API)
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // Buscar dados de ambos endpoints em paralelo
+    const movimentacaoPromises = [];
+    const planosPromises = [];
+
+    for (const chunk of chunks) {
+      movimentacaoPromises.push(
+        this.getMovimentacaoDetalhado(dermatoCodestab, chunk.inicio, chunk.fim)
+          .catch(() => [])
+      );
+      planosPromises.push(
+        this.getVendaPlanos(dermatoCodestab, chunk.inicio, chunk.fim)
+          .catch(() => [])
+      );
+    }
+
+    const [movimentacaoResults, planosResults] = await Promise.all([
+      Promise.all(movimentacaoPromises),
+      Promise.all(planosPromises),
+    ]);
+
+    let faturamentoTotal = 0;
+    let faturamentoFiltrado = 0;
+
+    // Debug: rastrear profissionais encontrados
+    const profissionaisMovimentacao = {};
+    const profissionaisPlanos = {};
+    let sampleMovimentacaoLogged = false;
+    let samplePlanoLogged = false;
+
+    // Processar movimentação detalhada (filtrar por 'vendedor' dentro de detalhamento)
+    // IMPORTANTE: Usa valor_bruto do movimento para evitar duplicação em parcelas
+    // O valor_item no detalhamento mostra o valor TOTAL, não proporcional à parcela
+    movimentacaoResults.flat().forEach(movimento => {
+      // Debug: log sample uma vez
+      if (!sampleMovimentacaoLogged && movimento) {
+        logger.info(`[Belle] MOVIMENTACAO Sample Keys: ${Object.keys(movimento).join(', ')}`);
+        if (Array.isArray(movimento.detalhamento) && movimento.detalhamento.length > 0) {
+          logger.info(`[Belle] MOVIMENTACAO Detalhamento[0] Keys: ${Object.keys(movimento.detalhamento[0]).join(', ')}`);
+          logger.info(`[Belle] MOVIMENTACAO Sample vendedor: "${movimento.detalhamento[0].vendedor}"`);
+        }
+        sampleMovimentacaoLogged = true;
+      }
+
+      // Usar valor_bruto do movimento (proporcional à parcela) ao invés de valor_item (total)
+      const valorMovimento = this.parseBrazilianNumber(movimento.valor_bruto || 0);
+      const detalhamentos = Array.isArray(movimento.detalhamento) ? movimento.detalhamento : [];
+
+      // Se não há detalhamento, não podemos filtrar por vendedor
+      if (detalhamentos.length === 0) {
+        faturamentoTotal += valorMovimento;
+        return;
+      }
+
+      // Calcular proporção de cada vendedor no movimento
+      // (para casos onde um movimento tem múltiplos itens de vendedores diferentes)
+      const totalItens = detalhamentos.reduce((sum, item) =>
+        sum + this.parseBrazilianNumber(item.valor_item || 0), 0);
+
+      detalhamentos.forEach(item => {
+        const valorItem = this.parseBrazilianNumber(item.valor_item || 0);
+        const vendedor = (item.vendedor || '').trim();
+
+        // Calcular valor proporcional deste item no movimento
+        // Se totalItens é 0, assume 100% para este item
+        const proporcao = totalItens > 0 ? valorItem / totalItens : 1;
+        const valorProporcional = valorMovimento * proporcao;
+
+        faturamentoTotal += valorProporcional;
+
+        // Debug: rastrear profissionais
+        const profKey = vendedor || 'SEM_VENDEDOR';
+        if (!profissionaisMovimentacao[profKey]) {
+          profissionaisMovimentacao[profKey] = { count: 0, valor: 0 };
+        }
+        profissionaisMovimentacao[profKey].count++;
+        profissionaisMovimentacao[profKey].valor += valorProporcional;
+
+        // Filtrar por profissional
+        if (vendedor.toUpperCase().includes(profissionalFiltro.toUpperCase())) {
+          faturamentoFiltrado += valorProporcional;
+        }
+      });
+    });
+
+    // Processar vendas de planos (filtrar por 'indicacao')
+    planosResults.flat().forEach(plano => {
+      // precoFinal é o valor do plano já com desconto aplicado
+      // Valores vêm no formato brasileiro (1.234,56)
+      const valor = this.parseBrazilianNumber(plano.precoFinal || plano.preco || plano.valor);
+      const indicacao = plano.indicacao || '';
+
+      faturamentoTotal += valor;
+
+      // Debug: log sample
+      if (!samplePlanoLogged && plano) {
+        logger.info(`[Belle] PLANO Sample Keys: ${Object.keys(plano).join(', ')}`);
+        logger.info(`[Belle] PLANO Sample indicacao: "${indicacao}"`);
+        samplePlanoLogged = true;
+      }
+
+      // Debug: rastrear profissionais
+      const profKey = indicacao || 'SEM_INDICACAO';
+      if (!profissionaisPlanos[profKey]) {
+        profissionaisPlanos[profKey] = { count: 0, valor: 0 };
+      }
+      profissionaisPlanos[profKey].count++;
+      profissionaisPlanos[profKey].valor += valor;
+
+      // Filtrar por profissional
+      if (indicacao.toUpperCase().includes(profissionalFiltro.toUpperCase())) {
+        faturamentoFiltrado += valor;
+      }
+    });
+
+    logger.info(`[Belle] DERMATO MOVIMENTACAO Profissionais: ${JSON.stringify(profissionaisMovimentacao, null, 2)}`);
+    logger.info(`[Belle] DERMATO PLANOS Profissionais: ${JSON.stringify(profissionaisPlanos, null, 2)}`);
+    logger.info(`[Belle] DERMATO Total: R$ ${faturamentoTotal.toFixed(2)}, Filtrado (${profissionalFiltro}): R$ ${faturamentoFiltrado.toFixed(2)}`);
+
+    return {
+      total: faturamentoTotal,
+      filtrado: faturamentoFiltrado,
+      profissional: profissionalFiltro,
+    };
+  }
+
   // ==================== METAS ====================
+
+  /**
+   * Calcula o faturamento por categoria de meta
+   * - SPA: codestab 2 (SPA) + 11 (Estética) + 1 (Dermato apenas DRA KELLY DA CAS)
+   * - Convênios: codestab 5
+   * - Bela Laser: codestab 12
+   * - Nutrologia: codestab 14
+   *
+   * IMPORTANTE: Para Dermato usamos endpoints especiais que têm info de profissional:
+   * - /relatorios/movimentacao_detalhado (campo 'responsavel')
+   * - /venda_planos (campo 'indicacao')
+   */
+  async getFaturamentoParaMetas(dataInicio, dataFim) {
+    const metasConfig = config.metas;
+
+    // Estabelecimentos que usam contas_receber (não precisam filtrar por profissional)
+    const estabelecimentosContasReceber = new Set();
+    metasConfig.spa.codestabs.forEach(c => estabelecimentosContasReceber.add(c)); // SPA (2) e Estética (11)
+    metasConfig.convenios.codestabs.forEach(c => estabelecimentosContasReceber.add(c));
+    metasConfig.belaLaser.codestabs.forEach(c => estabelecimentosContasReceber.add(c));
+    metasConfig.nutrologia.codestabs.forEach(c => estabelecimentosContasReceber.add(c));
+
+    const estabsContasReceber = Array.from(estabelecimentosContasReceber);
+
+    // Divide o período em chunks de 3 meses (limite da API)
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // 1. Buscar contas_receber para estabelecimentos que não precisam filtrar por profissional
+    const contasReceberPromises = [];
+    for (const codEstab of estabsContasReceber) {
+      for (const chunk of chunks) {
+        contasReceberPromises.push(
+          this.getContasReceber(codEstab, chunk.inicio, chunk.fim, 'lancamento')
+            .then(data => ({
+              codestab: codEstab,
+              data,
+            }))
+            .catch(() => ({
+              codestab: codEstab,
+              data: [],
+            }))
+        );
+      }
+    }
+
+    // 2. Buscar faturamento de Dermato filtrado por profissional
+    // Usa endpoints especiais: movimentacao_detalhado e venda_planos
+    const dermatoPromise = this.getFaturamentoDermatoPorProfissional(
+      dataInicio,
+      dataFim,
+      metasConfig.spa.dermatoProfissional
+    );
+
+    // Executar todas as requisições em paralelo
+    const [contasReceberResults, dermatoResult] = await Promise.all([
+      Promise.all(contasReceberPromises),
+      dermatoPromise,
+    ]);
+
+    // Inicializar contadores por categoria
+    const faturamentoPorCategoria = {
+      spa: 0,
+      convenios: 0,
+      belaLaser: 0,
+      nutrologia: 0,
+    };
+
+    // Processar resultados de contas_receber (SPA, Estética, Convênios, Bela Laser, Nutrologia)
+    contasReceberResults.forEach(resultado => {
+      const { codestab, data } = resultado;
+
+      if (!Array.isArray(data)) return;
+
+      data.forEach(movimento => {
+        // Apenas movimentos confirmados
+        if (movimento.confirmado !== 'S') return;
+
+        const valor = parseFloat(movimento.valor_bruto) || 0;
+
+        // SPA: codestabs 2 e 11
+        if (metasConfig.spa.codestabs.includes(codestab)) {
+          faturamentoPorCategoria.spa += valor;
+        }
+        // Convênios: codestab 5
+        else if (metasConfig.convenios.codestabs.includes(codestab)) {
+          faturamentoPorCategoria.convenios += valor;
+        }
+        // Bela Laser: codestab 12
+        else if (metasConfig.belaLaser.codestabs.includes(codestab)) {
+          faturamentoPorCategoria.belaLaser += valor;
+        }
+        // Nutrologia: codestab 14
+        else if (metasConfig.nutrologia.codestabs.includes(codestab)) {
+          faturamentoPorCategoria.nutrologia += valor;
+        }
+      });
+    });
+
+    // Adicionar faturamento de Dermato filtrado por profissional ao SPA
+    faturamentoPorCategoria.spa += dermatoResult.filtrado;
+
+    logger.info(`[Belle] Faturamento para metas calculado: SPA=${faturamentoPorCategoria.spa} (inclui Dermato Kelly: ${dermatoResult.filtrado}), Convênios=${faturamentoPorCategoria.convenios}, BelaLaser=${faturamentoPorCategoria.belaLaser}, Nutrologia=${faturamentoPorCategoria.nutrologia}`);
+
+    return faturamentoPorCategoria;
+  }
 
   async getMetasByPeriodo(dataInicio, dataFim) {
     try {

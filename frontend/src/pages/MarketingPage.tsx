@@ -8,6 +8,7 @@ import { StatusDistribution } from '../components/charts/StatusDistribution';
 import { HeatmapChart } from '../components/charts/HeatmapChart';
 import { KPICard } from '../components/charts/KPICard';
 import { DataTable } from '../components/dashboard/DataTable';
+import { TabNavigation } from '../components/navigation/TabNavigation';
 import { useDashboard } from '../hooks/useDashboard';
 import { PageSkeleton, RevalidatingIndicator } from '../components/ui/Skeleton';
 
@@ -107,6 +108,7 @@ export function MarketingPage() {
   if (isLoading && !data.marketing) {
     return (
       <div className="space-y-6">
+        <TabNavigation />
         <FilterBar
           filters={filters}
           onFilterChange={setFilters}
@@ -119,6 +121,9 @@ export function MarketingPage() {
 
   return (
     <div className="space-y-6">
+      {/* Tabs - Navigation */}
+      <TabNavigation />
+
       {/* Filters with revalidating indicator */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex-1">

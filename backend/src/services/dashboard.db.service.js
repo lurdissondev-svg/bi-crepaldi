@@ -121,30 +121,84 @@ class DashboardDBService {
         else if (semantica === 'failure') byOrigemLeadMap[origemId].disqualified++;
         else byOrigemLeadMap[origemId].inProgress++;
 
-        // Por UTM Source
+        // Por UTM Source (formato compatível com bitrix24.service.js)
         const utmSource = lead.utm_source || 'direct';
         if (!byUtmSourceMap[utmSource]) {
-          byUtmSourceMap[utmSource] = { name: utmSource, count: 0, converted: 0 };
+          byUtmSourceMap[utmSource] = {
+            source: utmSource,
+            total: 0,
+            converted: 0,
+            disqualified: 0,
+            inProgress: 0,
+            campaigns: {},
+          };
         }
-        byUtmSourceMap[utmSource].count++;
+        byUtmSourceMap[utmSource].total++;
         if (semantica === 'success') byUtmSourceMap[utmSource].converted++;
+        else if (semantica === 'failure') byUtmSourceMap[utmSource].disqualified++;
+        else byUtmSourceMap[utmSource].inProgress++;
 
-        // Por UTM Medium
+        // Adiciona campaign ao source
+        if (lead.utm_campaign) {
+          if (!byUtmSourceMap[utmSource].campaigns[lead.utm_campaign]) {
+            byUtmSourceMap[utmSource].campaigns[lead.utm_campaign] = {
+              campaign: lead.utm_campaign,
+              total: 0,
+              converted: 0,
+              disqualified: 0,
+              inProgress: 0,
+            };
+          }
+          byUtmSourceMap[utmSource].campaigns[lead.utm_campaign].total++;
+          if (semantica === 'success') byUtmSourceMap[utmSource].campaigns[lead.utm_campaign].converted++;
+          else if (semantica === 'failure') byUtmSourceMap[utmSource].campaigns[lead.utm_campaign].disqualified++;
+          else byUtmSourceMap[utmSource].campaigns[lead.utm_campaign].inProgress++;
+        }
+
+        // Por UTM Medium (formato compatível com bitrix24.service.js)
         const utmMedium = lead.utm_medium || 'none';
         if (!byUtmMediumMap[utmMedium]) {
-          byUtmMediumMap[utmMedium] = { name: utmMedium, count: 0, converted: 0 };
+          byUtmMediumMap[utmMedium] = {
+            medium: utmMedium,
+            total: 0,
+            converted: 0,
+            disqualified: 0,
+            inProgress: 0,
+          };
         }
-        byUtmMediumMap[utmMedium].count++;
+        byUtmMediumMap[utmMedium].total++;
         if (semantica === 'success') byUtmMediumMap[utmMedium].converted++;
+        else if (semantica === 'failure') byUtmMediumMap[utmMedium].disqualified++;
+        else byUtmMediumMap[utmMedium].inProgress++;
 
-        // Por UTM Campaign
+        // Por UTM Campaign (formato compatível com bitrix24.service.js)
         if (lead.utm_campaign) {
           const utmCampaign = lead.utm_campaign;
           if (!byUtmCampaignMap[utmCampaign]) {
-            byUtmCampaignMap[utmCampaign] = { name: utmCampaign, count: 0, converted: 0 };
+            byUtmCampaignMap[utmCampaign] = {
+              campaign: utmCampaign,
+              total: 0,
+              converted: 0,
+              disqualified: 0,
+              inProgress: 0,
+              sources: {},
+            };
           }
-          byUtmCampaignMap[utmCampaign].count++;
+          byUtmCampaignMap[utmCampaign].total++;
           if (semantica === 'success') byUtmCampaignMap[utmCampaign].converted++;
+          else if (semantica === 'failure') byUtmCampaignMap[utmCampaign].disqualified++;
+          else byUtmCampaignMap[utmCampaign].inProgress++;
+
+          // Adiciona source à campaign
+          if (!byUtmCampaignMap[utmCampaign].sources[utmSource]) {
+            byUtmCampaignMap[utmCampaign].sources[utmSource] = {
+              source: utmSource,
+              total: 0,
+              converted: 0,
+            };
+          }
+          byUtmCampaignMap[utmCampaign].sources[utmSource].total++;
+          if (semantica === 'success') byUtmCampaignMap[utmCampaign].sources[utmSource].converted++;
         }
 
         // Por status
@@ -161,9 +215,19 @@ class DashboardDBService {
 
       // Converter maps para arrays
       const byOrigemLead = Object.values(byOrigemLeadMap).sort((a, b) => b.total - a.total);
-      const byUtmSource = Object.values(byUtmSourceMap).sort((a, b) => b.count - a.count);
-      const byUtmMedium = Object.values(byUtmMediumMap).sort((a, b) => b.count - a.count);
-      const byUtmCampaign = Object.values(byUtmCampaignMap).sort((a, b) => b.count - a.count);
+      const byUtmSource = Object.values(byUtmSourceMap)
+        .map(s => ({
+          ...s,
+          campaigns: Object.values(s.campaigns).sort((a, b) => b.total - a.total),
+        }))
+        .sort((a, b) => b.total - a.total);
+      const byUtmMedium = Object.values(byUtmMediumMap).sort((a, b) => b.total - a.total);
+      const byUtmCampaign = Object.values(byUtmCampaignMap)
+        .map(c => ({
+          ...c,
+          sources: Object.values(c.sources).sort((a, b) => b.total - a.total),
+        }))
+        .sort((a, b) => b.total - a.total);
       const statusDistribution = Object.values(statusDistributionMap).sort((a, b) => b.count - a.count);
 
       // Heatmap
@@ -453,6 +517,186 @@ class DashboardDBService {
         returningPatientCount: 0,
         isEstimate: true,
       };
+    }
+  }
+
+  // ==================== FATURAMENTO DO BANCO ====================
+
+  /**
+   * Busca faturamento do banco de dados (contas_receber)
+   * Prioriza dados do banco quando disponíveis
+   */
+  async getFaturamentoFromDB(startDate, endDate, estabelecimentosFiltro = []) {
+    try {
+      let query = `
+        SELECT
+          cod_estab,
+          SUM(CASE WHEN confirmado = 'S' THEN valor_bruto ELSE 0 END) as faturamento_total,
+          SUM(CASE WHEN confirmado = 'S' THEN valor_liquido ELSE 0 END) as faturamento_liquido,
+          COUNT(CASE WHEN confirmado = 'S' THEN 1 END) as quantidade_movimentos
+        FROM contas_receber
+        WHERE dt_lancamento >= $1 AND dt_lancamento <= $2
+      `;
+
+      const params = [startDate, endDate];
+
+      if (estabelecimentosFiltro.length > 0) {
+        query += ` AND cod_estab = ANY($3)`;
+        params.push(estabelecimentosFiltro);
+      }
+
+      query += ` GROUP BY cod_estab`;
+
+      const result = await db.query(query, params);
+
+      let faturamentoTotal = 0;
+      let quantidadeMovimentos = 0;
+      const faturamentoPorEstabelecimento = {};
+
+      for (const row of result.rows) {
+        const valor = parseFloat(row.faturamento_total) || 0;
+        faturamentoTotal += valor;
+        quantidadeMovimentos += parseInt(row.quantidade_movimentos) || 0;
+        faturamentoPorEstabelecimento[row.cod_estab] = {
+          codestab: row.cod_estab,
+          valor,
+          quantidade: parseInt(row.quantidade_movimentos) || 0,
+        };
+      }
+
+      const ticketMedio = quantidadeMovimentos > 0 ? faturamentoTotal / quantidadeMovimentos : 0;
+
+      return {
+        faturamentoTotal,
+        quantidadeMovimentos,
+        ticketMedio,
+        porEstabelecimento: Object.values(faturamentoPorEstabelecimento),
+        source: 'database',
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getFaturamentoFromDB:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Verifica se há dados suficientes no banco para um período
+   * Retorna true se o banco tem cobertura completa do período
+   */
+  async hasDataForPeriod(startDate, endDate, tableName = 'contas_receber') {
+    try {
+      const query = `
+        SELECT
+          MIN(dt_lancamento)::date as min_date,
+          MAX(dt_lancamento)::date as max_date,
+          COUNT(*) as total_records
+        FROM ${tableName}
+        WHERE dt_lancamento >= $1 AND dt_lancamento <= $2
+      `;
+
+      const result = await db.query(query, [startDate, endDate]);
+      const row = result.rows[0];
+
+      if (!row || row.total_records === 0) {
+        return { hasData: false, coverage: 0 };
+      }
+
+      // Calcula cobertura aproximada
+      const startTime = new Date(startDate).getTime();
+      const endTime = new Date(endDate).getTime();
+      const minTime = new Date(row.min_date).getTime();
+      const maxTime = new Date(row.max_date).getTime();
+
+      const periodDays = (endTime - startTime) / (1000 * 60 * 60 * 24);
+      const coveredDays = (maxTime - minTime) / (1000 * 60 * 60 * 24);
+      const coverage = periodDays > 0 ? Math.min(100, (coveredDays / periodDays) * 100) : 0;
+
+      return {
+        hasData: row.total_records > 0,
+        coverage: Math.round(coverage),
+        records: parseInt(row.total_records),
+        minDate: row.min_date,
+        maxDate: row.max_date,
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em hasDataForPeriod:', error.message);
+      return { hasData: false, coverage: 0 };
+    }
+  }
+
+  /**
+   * Busca faturamento diário agregado do banco
+   */
+  async getFaturamentoDiarioFromDB(startDate, endDate, estabelecimentosFiltro = []) {
+    try {
+      let query = `
+        SELECT
+          data_referencia,
+          cod_estab,
+          faturamento_bruto,
+          faturamento_liquido,
+          quantidade_movimentos
+        FROM faturamento_diario
+        WHERE data_referencia >= $1 AND data_referencia <= $2
+      `;
+
+      const params = [startDate, endDate];
+
+      if (estabelecimentosFiltro.length > 0) {
+        query += ` AND cod_estab = ANY($3)`;
+        params.push(estabelecimentosFiltro);
+      }
+
+      query += ` ORDER BY data_referencia`;
+
+      const result = await db.query(query, params);
+      return result.rows;
+    } catch (error) {
+      logger.error('[DB] Erro em getFaturamentoDiarioFromDB:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca estatísticas gerais do banco para o período
+   */
+  async getDBStats() {
+    try {
+      const query = `
+        SELECT
+          'contas_receber' as tabela,
+          COUNT(*) as total,
+          MIN(dt_lancamento)::date as min_date,
+          MAX(dt_lancamento)::date as max_date
+        FROM contas_receber
+        UNION ALL
+        SELECT
+          'vendas' as tabela,
+          COUNT(*) as total,
+          MIN(data_venda)::date as min_date,
+          MAX(data_venda)::date as max_date
+        FROM vendas
+        UNION ALL
+        SELECT
+          'faturamento_diario' as tabela,
+          COUNT(*) as total,
+          MIN(data_referencia) as min_date,
+          MAX(data_referencia) as max_date
+        FROM faturamento_diario
+      `;
+
+      const result = await db.query(query);
+      return result.rows.reduce((acc, row) => {
+        acc[row.tabela] = {
+          total: parseInt(row.total),
+          minDate: row.min_date,
+          maxDate: row.max_date,
+        };
+        return acc;
+      }, {});
+    } catch (error) {
+      logger.error('[DB] Erro em getDBStats:', error.message);
+      return {};
     }
   }
 

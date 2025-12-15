@@ -7,7 +7,6 @@ import { FaturamentoPage } from './pages/FaturamentoPage';
 import { MarketingPage } from './pages/MarketingPage';
 import { ComercialPage } from './pages/ComercialPage';
 import { AtendimentoPage } from './pages/AtendimentoPage';
-import { AdministrativoPage } from './pages/AdministrativoPage';
 import { MetasPage } from './pages/MetasPage';
 import { PacientesPage } from './pages/PacientesPage';
 import { MetaAdsConfigPage } from './pages/MetaAdsConfigPage';
@@ -25,7 +24,6 @@ function App() {
               <Route path="marketing" element={<MarketingPage />} />
               <Route path="comercial" element={<ComercialPage />} />
               <Route path="atendimento" element={<AtendimentoPage />} />
-              <Route path="administrativo" element={<AdministrativoPage />} />
               <Route path="metas" element={<MetasPage />} />
               <Route path="pacientes" element={<PacientesPage />} />
               <Route path="config/meta-ads" element={<MetaAdsConfigPage />} />

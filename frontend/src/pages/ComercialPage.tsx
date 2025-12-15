@@ -3,6 +3,7 @@ import { FilterBar } from '../components/filters/FilterBar';
 import { GaugeChart } from '../components/charts/GaugeChart';
 import { BarChartCard } from '../components/charts/BarChartCard';
 import { DataTable } from '../components/dashboard/DataTable';
+import { TabNavigation } from '../components/navigation/TabNavigation';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency } from '../utils/format';
 import { PageSkeleton, RevalidatingIndicator } from '../components/ui/Skeleton';
@@ -61,16 +62,35 @@ export function ComercialPage() {
   const isRevalidating = revalidatingStates.comercial;
 
   const [metas, setMetas] = useState({
-    spa: { atual: 0, meta: 1060000 },
-    convenios: { atual: 0, meta: 210000 },
+    spa: { atual: 0, meta: 700000 },
+    convenios: { atual: 0, meta: 121000 },
     belaLaser: { atual: 0, meta: 100000 },
+    nutrologia: { atual: 0, meta: 257000 },
   });
 
+  // Atualiza metas do endpoint de metas
   useEffect(() => {
-    if (data.comercial) {
-      setMetas(data.comercial.metas);
+    if (data.metas) {
+      setMetas({
+        spa: {
+          atual: data.metas.metaSpa?.faturamentoAtual || 0,
+          meta: data.metas.metaSpa?.meta1?.metaValor || 700000,
+        },
+        convenios: {
+          atual: data.metas.metaConvenios?.faturamentoAtual || 0,
+          meta: data.metas.metaConvenios?.meta1?.metaValor || 121000,
+        },
+        belaLaser: {
+          atual: data.metas.metaBelaLaser?.faturamentoAtual || 0,
+          meta: data.metas.metaBelaLaser?.meta1?.metaValor || 100000,
+        },
+        nutrologia: {
+          atual: data.metas.metaNutrologia?.faturamentoAtual || 0,
+          meta: data.metas.metaNutrologia?.meta1?.metaValor || 257000,
+        },
+      });
     }
-  }, [data.comercial]);
+  }, [data.metas]);
 
   const conversaoColumns = [
     { key: 'origem', header: 'Origem Lead', className: 'text-primary-400' },
@@ -91,6 +111,7 @@ export function ComercialPage() {
   if (isLoading && !data.comercial) {
     return (
       <div className="space-y-6">
+        <TabNavigation />
         <FilterBar
           filters={filters}
           onFilterChange={setFilters}
@@ -103,6 +124,9 @@ export function ComercialPage() {
 
   return (
     <div className="space-y-6">
+      {/* Tabs - Navigation */}
+      <TabNavigation />
+
       {/* Filters with revalidating indicator */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex-1">
@@ -141,7 +165,7 @@ export function ComercialPage() {
       </div>
 
       {/* Metas Gauges */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <GaugeChart
           title="Meta SPA"
           value={metas.spa.atual}
@@ -156,6 +180,11 @@ export function ComercialPage() {
           title="Meta Bela Laser"
           value={metas.belaLaser.atual}
           maxValue={metas.belaLaser.meta}
+        />
+        <GaugeChart
+          title="Meta Nutrologia"
+          value={metas.nutrologia.atual}
+          maxValue={metas.nutrologia.meta}
         />
       </div>
 

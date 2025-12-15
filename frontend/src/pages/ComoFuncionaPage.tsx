@@ -4,7 +4,6 @@ import {
   TrendingUp,
   ShoppingCart,
   UserCheck,
-  FolderOpen,
   Target,
   Users,
   Database,
@@ -12,7 +11,6 @@ import {
   HelpCircle,
   Lightbulb,
   BookOpen,
-  ArrowRight,
   CheckCircle2,
   Clock,
   Calculator
@@ -359,34 +357,6 @@ export function ComoFuncionaPage() {
               <li>• Nao respondeu mais</li>
               <li>• Escolheu concorrente</li>
               <li>• Nao era o perfil certo</li>
-            </ul>
-          </ExplanationCard>
-        </div>
-      </Section>
-
-      {/* Administrativo */}
-      <Section
-        icon={<FolderOpen size={24} className="text-white" />}
-        title="Aba Adm. Financeiro"
-        color="bg-gradient-to-r from-slate-500 to-slate-700"
-      >
-        <p className="text-[var(--color-text-secondary)] mb-4">
-          Esta aba mostra informacoes <strong>financeiras e administrativas</strong> mais detalhadas.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <ExplanationCard title="Contas a Receber" emoji="📥">
-            <p>Dinheiro que os pacientes <strong>ainda vao pagar</strong>.</p>
-            <p className="mt-2">Exemplo: Parcelamentos, boletos pendentes, etc.</p>
-          </ExplanationCard>
-
-          <ExplanationCard title="Formas de Pagamento" emoji="💳">
-            <p>Mostra <strong>como os pacientes pagam</strong>:</p>
-            <ul className="mt-2 space-y-1 text-xs">
-              <li>• Cartao de credito/debito</li>
-              <li>• PIX</li>
-              <li>• Dinheiro</li>
-              <li>• Parcelado</li>
             </ul>
           </ExplanationCard>
         </div>

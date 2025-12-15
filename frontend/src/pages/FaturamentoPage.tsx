@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { FilterBar } from '../components/filters/FilterBar';
 import { BarChartCard } from '../components/charts/BarChartCard';
 import { AreaChartCard } from '../components/charts/AreaChartCard';
+import { TabNavigation } from '../components/navigation/TabNavigation';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency, formatPercentage } from '../utils/format';
 import { TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
@@ -99,8 +100,8 @@ export function FaturamentoPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <h2 className="text-lg font-semibold text-dark-text">FATURAMENTO CREPALDI</h2>
+      {/* Tabs - Navigation */}
+      <TabNavigation />
 
       {/* Filters with revalidating indicator */}
       <div className="flex items-center justify-between gap-4">

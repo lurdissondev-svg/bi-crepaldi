@@ -253,21 +253,38 @@ export interface AtendimentoData {
 }
 
 // Dashboard Metas
+export interface MetaInfo {
+  expectativa: number;
+  realidade: number;
+  diaria: number;
+  metaValor: number;
+  metaValorFormatado: string;
+  faturamentoAtual: number;
+  faturamentoAtualFormatado: string;
+  diasRestantes: number;
+}
+
+export interface MetaEstabelecimento {
+  nome: string;
+  faturamentoAtual: number;
+  faturamentoAtualFormatado: string;
+  meta1: MetaInfo;
+  meta2: MetaInfo;
+  meta3: MetaInfo;
+}
+
 export interface MetasData {
-  metaSpa: {
-    meta1: { expectativa: number; realidade: number; diaria: number };
-    meta2: { expectativa: number; realidade: number; diaria: number };
-    meta3: { expectativa: number; realidade: number; diaria: number };
-  };
-  metasGerais: Array<{
-    nome: string;
-    valor: number;
-    meta: number;
-    percentual: number;
-  }>;
+  metaSpa: MetaEstabelecimento;
+  metaConvenios: MetaEstabelecimento;
+  metaBelaLaser: MetaEstabelecimento;
+  metaNutrologia: MetaEstabelecimento;
   progressoGeral: {
-    faturamentoAtual: number;
-    faturamentoAtualFormatado: string;
+    faturamentoTotal: number;
+    faturamentoTotalFormatado: string;
+    diasPassados: number;
+    diasRestantes: number;
+    totalDias: number;
+    expectativaPct: number;
   };
 }
 
@@ -418,3 +435,56 @@ export interface MetaAdsSummary {
   avgCtr: number;
   costPerLead: number | null;
 }
+
+// Paciente Inativo (mais de X dias sem vir)
+export interface InactivePatient {
+  cliente_id: number;
+  cliente_nome: string;
+  ultima_visita: string;
+  dias_sem_vir: number;
+  total_investido: number;
+  total_compras: number;
+  ticket_medio: number;
+}
+
+// Pacientes Inativos - Endpoint Dinâmico (percentile-based)
+export interface InactivePatientsDynamicStats {
+  min_dias: number;
+  max_dias: number;
+  avg_dias: number;
+  total_pacientes: number;
+  percentile_used: number;
+}
+
+export interface InactivePatientsDynamicResponse {
+  threshold_days: number;
+  stats: InactivePatientsDynamicStats;
+  patients: InactivePatient[];
+}
+
+// Pacientes com atraso baseado em frequência
+export interface PatientOverdue {
+  cliente_id: number;
+  cliente_nome: string;
+  ultima_visita: string;
+  dias_desde_ultima: number;
+  total_visitas: number;
+  intervalo_medio_dias: number;
+  dias_atraso: number;
+  urgencia: 'critico' | 'alto' | 'medio' | 'baixo';
+  total_investido: number;
+}
+
+export interface PatientsOverdueResponse {
+  multiplier_used: number;
+  patients: PatientOverdue[];
+}
+
+// Resumo de risco de churn
+export interface ChurnRiskLevel {
+  nivel_risco: 'critico' | 'alto' | 'medio' | 'ativo';
+  quantidade: number;
+  valor_em_risco: number;
+}
+
+export type ChurnRiskSummaryResponse = ChurnRiskLevel[];

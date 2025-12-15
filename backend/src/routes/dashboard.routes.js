@@ -23,11 +23,22 @@ router.get('/conversion-funnel', cacheMiddleware(cacheKey), dashboardController.
 router.get('/returning-customers', cacheMiddleware(cacheKey), dashboardController.getReturningCustomerStats);
 router.get('/rfm-segmentation', cacheMiddleware(cacheKey), dashboardController.getRFMSegmentation);
 router.get('/top-customers-ltv', cacheMiddleware(cacheKey), dashboardController.getTopCustomersByLTV);
+router.get('/inactive-patients', cacheMiddleware(cacheKey), dashboardController.getInactivePatients);
+router.get('/inactive-patients-dynamic', cacheMiddleware(cacheKey), dashboardController.getInactivePatientsDynamic);
+router.get('/patients-overdue', cacheMiddleware(cacheKey), dashboardController.getPatientsOverdueForReturn);
+router.get('/churn-risk-summary', cacheMiddleware(cacheKey), dashboardController.getChurnRiskSummary);
 
 // Opções de filtro
 router.get('/filtros', cacheMiddleware(cacheKey), dashboardController.getFilterOptions);
 
 // Status do sync (sem cache pois muda constantemente)
 router.get('/sync-status', dashboardController.getSyncStatus);
+
+// Clear all caches
+router.post('/clear-cache', dashboardController.clearCache);
+
+// Backfill de dados históricos (para importar histórico para o banco)
+router.post('/backfill', dashboardController.runBackfill);
+router.post('/backfill/current-year', dashboardController.runBackfillCurrentYear);
 
 export default router;

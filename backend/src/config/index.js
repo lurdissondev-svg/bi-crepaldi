@@ -44,6 +44,52 @@ export const config = {
     },
   },
 
+  // Configuração de Metas por Estabelecimento
+  metas: {
+    // Meta SPA: SPA (2) + Estética (11) + Dermato (1) apenas DRA KELLY DA CAS
+    spa: {
+      nome: 'SPA',
+      codestabs: [2, 11], // SPA e Estética (Dermato é filtrado por profissional)
+      dermatoCodestab: 1, // Dermato - apenas DRA KELLY DA CAS
+      dermatoProfissional: 'DRA KELLY DA CAS',
+      metas: {
+        meta1: 700000,
+        meta2: 780000,
+        meta3: 850000,
+      },
+    },
+    // Meta Convênios: Convênio (5)
+    convenios: {
+      nome: 'Convênios',
+      codestabs: [5],
+      metas: {
+        meta1: 121000,
+        meta2: 136000,
+        meta3: 151000,
+      },
+    },
+    // Meta Bela Laser: Bela Laser (12)
+    belaLaser: {
+      nome: 'Bela Laser',
+      codestabs: [12],
+      metas: {
+        meta1: 100000,
+        meta2: 124000,
+        meta3: 150000,
+      },
+    },
+    // Meta Nutrologia: Nutrologia (14)
+    nutrologia: {
+      nome: 'Nutrologia',
+      codestabs: [14],
+      metas: {
+        meta1: 257000,
+        meta2: 294000,
+        meta3: 331000,
+      },
+    },
+  },
+
   cache: {
     ttl: parseInt(process.env.CACHE_TTL) || 300,
   },

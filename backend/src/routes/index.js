@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import dashboardRoutes from './dashboard.routes.js';
 import metaRoutes from './meta.routes.js';
+import webhookRoutes from './webhook.routes.js';
 import bitrix24Service from '../services/bitrix24.service.js';
 import belleService from '../services/belle.service.js';
 import { metaAdsService } from '../services/meta.service.js';
@@ -142,5 +143,8 @@ router.use('/dashboard', dashboardRoutes);
 
 // Meta Ads routes
 router.use('/meta', metaRoutes);
+
+// Webhook routes (Tintim e outras integrações)
+router.use('/webhooks', webhookRoutes);
 
 export default router;

@@ -6,6 +6,7 @@ import syncService from '../services/sync.service.js';
 import customerAnalyticsService from '../services/customer-analytics.service.js';
 import { getDateRanges, formatCurrency, getDecade } from '../utils/dateUtils.js';
 import logger from '../utils/logger.js';
+import config from '../config/index.js';
 
 export const dashboardController = {
   // ==================== RESUMO ====================
@@ -139,9 +140,22 @@ export const dashboardController = {
       const centrosCusto = centros_custo ? centros_custo.split(',') : [];
 
       // Data de hoje
-    const today = new Date().toISOString().split('T')[0];
+      const today = new Date().toISOString().split('T')[0];
 
-    const [
+      // Helper para buscar faturamento: tenta banco primeiro, fallback para API
+      const getFaturamentoWithFallback = async (start, end, estabs = []) => {
+        // Tenta buscar do banco primeiro
+        const dbData = await dashboardDBService.getFaturamentoFromDB(start, end, estabs);
+        if (dbData && dbData.faturamentoTotal > 0) {
+          logger.debug(`[Faturamento] Usando dados do banco para ${start} a ${end}`);
+          return dbData;
+        }
+        // Fallback para API Belle
+        logger.debug(`[Faturamento] Fallback para API para ${start} a ${end}`);
+        return belleService.getFaturamentoContasReceber(start, end, estabs);
+      };
+
+      const [
         faturamentoAtual,
         faturamentoMesAnterior,
         faturamentoAnoAtual,
@@ -150,18 +164,18 @@ export const dashboardController = {
         newPatientStatsMensal,
         newPatientStatsAnual,
       ] = await Promise.all([
-        belleService.getFaturamentoContasReceber(startDate, endDate, centrosCusto),
-        belleService.getFaturamentoContasReceber(
+        getFaturamentoWithFallback(startDate, endDate, centrosCusto),
+        getFaturamentoWithFallback(
           dateRanges.lastMonth.start,
           dateRanges.lastMonth.end,
           centrosCusto
         ),
-        belleService.getFaturamentoContasReceber(
+        getFaturamentoWithFallback(
           dateRanges.thisYear.start,
           dateRanges.thisYear.end,
           centrosCusto
         ),
-        belleService.getFaturamentoContasReceber(
+        getFaturamentoWithFallback(
           dateRanges.lastYear.start,
           dateRanges.lastYear.end,
           centrosCusto
@@ -476,6 +490,27 @@ export const dashboardController = {
         faturamento: faturamento.procedimentos?.slice(0, 15).map(p => p.valor) || [],
       };
 
+      // Calcular faturamento por estabelecimento para metas
+      let spaAtual = 0;
+      let conveniosAtual = 0;
+      let belaLaserAtual = 0;
+
+      if (faturamento.porEstabelecimento) {
+        faturamento.porEstabelecimento.forEach(estab => {
+          const nomeEstab = (estab.estabelecimento || '').toLowerCase();
+          if (nomeEstab.includes('conv')) {
+            conveniosAtual += estab.valor || 0;
+          } else if (nomeEstab.includes('bela') || nomeEstab.includes('laser')) {
+            belaLaserAtual += estab.valor || 0;
+          } else if (nomeEstab.includes('spa') || nomeEstab.includes('clinic')) {
+            spaAtual += estab.valor || 0;
+          } else {
+            // Default para SPA se não identificado
+            spaAtual += estab.valor || 0;
+          }
+        });
+      }
+
       res.json({
         success: true,
         data: {
@@ -484,15 +519,15 @@ export const dashboardController = {
           procedimentosPacienteNovo,
           metas: {
             spa: {
-              atual: faturamento.faturamentoTotal * 0.3,
+              atual: spaAtual,
               meta: 1060000,
             },
             convenios: {
-              atual: 0,
+              atual: conveniosAtual,
               meta: 210000,
             },
             belaLaser: {
-              atual: faturamento.faturamentoTotal * 0.1,
+              atual: belaLaserAtual,
               meta: 100000,
             },
           },
@@ -587,26 +622,76 @@ export const dashboardController = {
       const startDate = data_inicio || dateRanges.thisMonth.start;
       const endDate = data_fim || dateRanges.thisMonth.end;
 
-      const [metas, faturamento] = await Promise.all([
-        belleService.getMetasByPeriodo(startDate, endDate),
-        belleService.getAnalyticsFaturamento(startDate, endDate, []),
-      ]);
+      // Buscar faturamento por categoria de meta (SPA, Convênios, Bela Laser, Nutrologia)
+      const faturamentoPorCategoria = await belleService.getFaturamentoParaMetas(startDate, endDate);
 
-      // Calcular progresso das metas por nível
-      const metaSpa = {
-        meta1: { expectativa: 43.48, realidade: 0, diaria: 0 },
-        meta2: { expectativa: 43.48, realidade: 0, diaria: 0 },
-        meta3: { expectativa: 43.48, realidade: 0, diaria: 0 },
+      // Calcular dias no período
+      const inicio = new Date(startDate);
+      const fim = new Date(endDate);
+      const hoje = new Date();
+      const totalDias = Math.ceil((fim - inicio) / (1000 * 60 * 60 * 24)) + 1;
+      const diasPassados = Math.min(totalDias, Math.ceil((hoje - inicio) / (1000 * 60 * 60 * 24)) + 1);
+      const diasRestantes = Math.max(0, totalDias - diasPassados);
+
+      // Calcular expectativa (% esperado até hoje baseado nos dias passados)
+      const expectativaPct = totalDias > 0 ? (diasPassados / totalDias) * 100 : 0;
+
+      // Função para calcular realidade e diária para cada meta
+      const calcularMeta = (metaValor, faturamentoAtual) => {
+        const realidade = metaValor > 0 ? (faturamentoAtual / metaValor) * 100 : 0;
+        const faltaParaMeta = Math.max(0, metaValor - faturamentoAtual);
+        const diaria = diasRestantes > 0 ? faltaParaMeta / diasRestantes : 0;
+        return {
+          expectativa: parseFloat(expectativaPct.toFixed(2)),
+          realidade: parseFloat(realidade.toFixed(2)),
+          diaria: parseFloat(diaria.toFixed(2)),
+          metaValor,
+          metaValorFormatado: formatCurrency(metaValor),
+          faturamentoAtual,
+          faturamentoAtualFormatado: formatCurrency(faturamentoAtual),
+          diasRestantes,
+        };
       };
+
+      // Função para criar objeto de metas de um estabelecimento
+      const criarMetasEstabelecimento = (categoria, faturamentoAtual) => {
+        const metasConfig = config.metas[categoria];
+        return {
+          nome: metasConfig.nome,
+          faturamentoAtual,
+          faturamentoAtualFormatado: formatCurrency(faturamentoAtual),
+          meta1: calcularMeta(metasConfig.metas.meta1, faturamentoAtual),
+          meta2: calcularMeta(metasConfig.metas.meta2, faturamentoAtual),
+          meta3: calcularMeta(metasConfig.metas.meta3, faturamentoAtual),
+        };
+      };
+
+      // Criar metas para cada estabelecimento
+      const metaSpa = criarMetasEstabelecimento('spa', faturamentoPorCategoria.spa);
+      const metaConvenios = criarMetasEstabelecimento('convenios', faturamentoPorCategoria.convenios);
+      const metaBelaLaser = criarMetasEstabelecimento('belaLaser', faturamentoPorCategoria.belaLaser);
+      const metaNutrologia = criarMetasEstabelecimento('nutrologia', faturamentoPorCategoria.nutrologia);
+
+      // Faturamento total de todas as categorias
+      const faturamentoTotal = faturamentoPorCategoria.spa +
+                               faturamentoPorCategoria.convenios +
+                               faturamentoPorCategoria.belaLaser +
+                               faturamentoPorCategoria.nutrologia;
 
       res.json({
         success: true,
         data: {
           metaSpa,
-          metasGerais: metas.data || [],
+          metaConvenios,
+          metaBelaLaser,
+          metaNutrologia,
           progressoGeral: {
-            faturamentoAtual: faturamento.faturamentoTotal,
-            faturamentoAtualFormatado: formatCurrency(faturamento.faturamentoTotal),
+            faturamentoTotal,
+            faturamentoTotalFormatado: formatCurrency(faturamentoTotal),
+            diasPassados,
+            diasRestantes,
+            totalDias,
+            expectativaPct: parseFloat(expectativaPct.toFixed(2)),
           },
         },
       });
@@ -762,6 +847,100 @@ export const dashboardController = {
     }
   },
 
+  async getInactivePatients(req, res) {
+    try {
+      const { days, limit } = req.query;
+      const inactiveDays = parseInt(days) || 120; // 4 meses default
+      const resultLimit = parseInt(limit) || 50;
+
+      const patients = await customerAnalyticsService.getInactivePatients(inactiveDays, resultLimit);
+
+      res.json({
+        success: true,
+        data: patients,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar pacientes inativos:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar pacientes inativos',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna pacientes inativos com threshold dinâmico baseado em percentil
+   * Útil quando os dados não cobrem 4 meses
+   */
+  async getInactivePatientsDynamic(req, res) {
+    try {
+      const { percentile, limit } = req.query;
+      const percentileValue = parseInt(percentile) || 75; // Top 25% mais inativos
+      const resultLimit = parseInt(limit) || 50;
+
+      const result = await customerAnalyticsService.getInactivePatientsDynamic(percentileValue, resultLimit);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar pacientes inativos (dinâmico):', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar pacientes inativos',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna pacientes atrasados baseado em sua frequência histórica
+   */
+  async getPatientsOverdueForReturn(req, res) {
+    try {
+      const { multiplier, limit } = req.query;
+      const multiplierValue = parseFloat(multiplier) || 2; // 2x o intervalo normal
+      const resultLimit = parseInt(limit) || 50;
+
+      const patients = await customerAnalyticsService.getPatientsOverdueForReturn(multiplierValue, resultLimit);
+
+      res.json({
+        success: true,
+        data: patients,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar pacientes atrasados:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar pacientes atrasados',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna resumo de pacientes em risco de churn
+   */
+  async getChurnRiskSummary(req, res) {
+    try {
+      const summary = await customerAnalyticsService.getChurnRiskSummary();
+
+      res.json({
+        success: true,
+        data: summary,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar resumo de churn:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar resumo de churn',
+        message: error.message,
+      });
+    }
+  },
+
   // ==================== LEAD-SALE CORRELATION ====================
 
   async getLeadSaleCorrelation(req, res) {
@@ -873,6 +1052,33 @@ export const dashboardController = {
     }
   },
 
+  // ==================== CACHE CLEAR ====================
+
+  async clearCache(req, res) {
+    try {
+      // Clear Belle service cache
+      belleService.clearCache();
+
+      // Clear HTTP middleware cache
+      const { clearCache } = await import('../utils/cache.js');
+      clearCache();
+
+      logger.info('[Dashboard] All caches cleared');
+
+      res.json({
+        success: true,
+        message: 'All caches cleared successfully',
+      });
+    } catch (error) {
+      logger.error('Erro ao limpar cache:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao limpar cache',
+        message: error.message,
+      });
+    }
+  },
+
   // ==================== SYNC STATUS ====================
 
   async getSyncStatus(req, res) {
@@ -920,6 +1126,66 @@ export const dashboardController = {
       res.status(500).json({
         success: false,
         error: 'Erro ao buscar status do sync',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Executa backfill de dados históricos
+   * POST /api/dashboard/backfill
+   * Body: { data_inicio: 'yyyy-MM-dd', data_fim: 'yyyy-MM-dd', entities?: ['contas_receber', 'vendas'] }
+   */
+  async runBackfill(req, res) {
+    try {
+      const { data_inicio, data_fim, entities } = req.body;
+
+      if (!data_inicio || !data_fim) {
+        return res.status(400).json({
+          success: false,
+          error: 'Parâmetros data_inicio e data_fim são obrigatórios',
+        });
+      }
+
+      logger.info(`[Backfill API] Iniciando backfill de ${data_inicio} a ${data_fim}`);
+
+      const result = await syncService.runBackfill(data_inicio, data_fim, entities);
+
+      res.json({
+        success: true,
+        message: 'Backfill concluído com sucesso',
+        data: result,
+      });
+    } catch (error) {
+      logger.error('Erro no backfill:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao executar backfill',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Executa backfill do ano atual (atalho)
+   * POST /api/dashboard/backfill/current-year
+   */
+  async runBackfillCurrentYear(req, res) {
+    try {
+      logger.info(`[Backfill API] Iniciando backfill do ano atual`);
+
+      const result = await syncService.backfillCurrentYear();
+
+      res.json({
+        success: true,
+        message: 'Backfill do ano atual concluído com sucesso',
+        data: result,
+      });
+    } catch (error) {
+      logger.error('Erro no backfill do ano atual:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao executar backfill do ano atual',
         message: error.message,
       });
     }

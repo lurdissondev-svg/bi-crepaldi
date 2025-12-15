@@ -1,6 +1,7 @@
 import { FilterBar } from '../components/filters/FilterBar';
 import { DataTable } from '../components/dashboard/DataTable';
 import { PieChartCard } from '../components/charts/PieChartCard';
+import { TabNavigation } from '../components/navigation/TabNavigation';
 import { useDashboard } from '../hooks/useDashboard';
 import { formatCurrency } from '../utils/format';
 import { PageSkeleton, RevalidatingIndicator } from '../components/ui/Skeleton';
@@ -81,7 +82,7 @@ export function AtendimentoPage() {
   if (isLoading && !data.atendimento) {
     return (
       <div className="space-y-6">
-        <h2 className="text-lg font-semibold text-dark-text">DESEMPENHO</h2>
+        <TabNavigation />
         <FilterBar
           filters={filters}
           onFilterChange={setFilters}
@@ -95,8 +96,8 @@ export function AtendimentoPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <h2 className="text-lg font-semibold text-dark-text">DESEMPENHO</h2>
+      {/* Tabs - Navigation */}
+      <TabNavigation />
 
       {/* Filters with revalidating indicator */}
       <div className="flex items-center justify-between gap-4">

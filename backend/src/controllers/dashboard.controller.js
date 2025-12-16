@@ -5,7 +5,8 @@ import leadSaleCorrelator from '../services/leadSaleCorrelator.js';
 import syncService from '../services/sync.service.js';
 import customerAnalyticsService from '../services/customer-analytics.service.js';
 import { getDateRanges, formatCurrency, getDecade } from '../utils/dateUtils.js';
-import { getInfoDiasUteis } from '../utils/businessDays.js';
+import { getInfoDiasUteis, contarDiasUteisPassados, contarDiasUteisRestantes } from '../utils/businessDays.js';
+import { getBusinessDaysForPeriod } from './businessDays.controller.js';
 import logger from '../utils/logger.js';
 import config from '../config/index.js';
 
@@ -631,13 +632,22 @@ export const dashboardController = {
       // Buscar faturamento por categoria de meta (SPA, Convênios, Bela Laser, Nutrologia)
       const faturamentoPorCategoria = await belleService.getFaturamentoParaMetas(startDate, endDate);
 
-      // Calcular dias úteis no período (exclui finais de semana e feriados de Cuiabá)
-      const { totalDiasUteis, diasUteisPassados, diasUteisRestantes } = getInfoDiasUteis(startDate, endDate);
+      // Buscar dias úteis configurados no banco (ou calcula automaticamente)
+      const totalDias = await getBusinessDaysForPeriod(startDate, endDate);
 
-      // Usar dias úteis para os cálculos
-      const totalDias = totalDiasUteis;
-      const diasPassados = diasUteisPassados;
-      const diasRestantes = diasUteisRestantes;
+      // Calcular dias passados e restantes proporcionalmente
+      const start = new Date(startDate + 'T12:00:00');
+      const end = new Date(endDate + 'T12:00:00');
+      const hoje = new Date();
+      hoje.setHours(12, 0, 0, 0);
+
+      const lastDay = end.getDate();
+      const dayOfMonth = Math.min(hoje.getDate(), lastDay);
+      const proportion = dayOfMonth / lastDay;
+
+      // Calcular dias passados e restantes baseado na proporção do mês
+      const diasPassados = Math.round(totalDias * proportion);
+      const diasRestantes = Math.max(0, totalDias - diasPassados);
 
       // Calcular expectativa (% esperado até hoje baseado nos dias úteis passados)
       const expectativaPct = totalDias > 0 ? (diasPassados / totalDias) * 100 : 0;

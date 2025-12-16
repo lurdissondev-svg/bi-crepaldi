@@ -5,6 +5,7 @@ import webhookRoutes from './webhook.routes.js';
 import authRoutes from './auth.routes.js';
 import usersRoutes from './users.routes.js';
 import rolesRoutes from './roles.routes.js';
+import businessDaysRoutes from './businessDays.routes.js';
 import bitrix24Service from '../services/bitrix24.service.js';
 import belleService from '../services/belle.service.js';
 import { metaAdsService } from '../services/meta.service.js';
@@ -149,6 +150,9 @@ router.use('/users', usersRoutes);
 
 // Roles management routes
 router.use('/roles', rolesRoutes);
+
+// Business days configuration routes
+router.use('/business-days', businessDaysRoutes);
 
 // Dashboard routes
 router.use('/dashboard', dashboardRoutes);

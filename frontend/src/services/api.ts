@@ -514,6 +514,54 @@ class ApiService {
   async deleteRole(id: number): Promise<void> {
     await this.client.delete(`/roles/${id}`);
   }
+
+  // ===============================
+  // Business Days Configuration
+  // ===============================
+
+  async getBusinessDays(year: number): Promise<Array<{
+    year: number;
+    month: number;
+    business_days: number;
+    calculated_days: number | null;
+    notes: string | null;
+    updated_at: string | null;
+  }>> {
+    const response = await this.client.get<ApiResponse<Array<{
+      year: number;
+      month: number;
+      business_days: number;
+      calculated_days: number | null;
+      notes: string | null;
+      updated_at: string | null;
+    }>>>(`/business-days/${year}`);
+    return response.data.data;
+  }
+
+  async updateBusinessDays(
+    year: number,
+    month: number,
+    businessDays: number,
+    notes?: string
+  ): Promise<{
+    year: number;
+    month: number;
+    business_days: number;
+    calculated_days: number;
+    notes: string | null;
+  }> {
+    const response = await this.client.put<ApiResponse<{
+      year: number;
+      month: number;
+      business_days: number;
+      calculated_days: number;
+      notes: string | null;
+    }>>(`/business-days/${year}/${month}`, {
+      business_days: businessDays,
+      notes,
+    });
+    return response.data.data;
+  }
 }
 
 export const api = new ApiService();

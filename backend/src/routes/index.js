@@ -2,6 +2,9 @@ import { Router } from 'express';
 import dashboardRoutes from './dashboard.routes.js';
 import metaRoutes from './meta.routes.js';
 import webhookRoutes from './webhook.routes.js';
+import authRoutes from './auth.routes.js';
+import usersRoutes from './users.routes.js';
+import rolesRoutes from './roles.routes.js';
 import bitrix24Service from '../services/bitrix24.service.js';
 import belleService from '../services/belle.service.js';
 import { metaAdsService } from '../services/meta.service.js';
@@ -137,6 +140,15 @@ router.post('/sync/run', async (req, res) => {
     });
   }
 });
+
+// Auth routes
+router.use('/auth', authRoutes);
+
+// Users management routes
+router.use('/users', usersRoutes);
+
+// Roles management routes
+router.use('/roles', rolesRoutes);
 
 // Dashboard routes
 router.use('/dashboard', dashboardRoutes);

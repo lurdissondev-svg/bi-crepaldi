@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import type {
   ApiResponse,
   ResumoData,
@@ -25,11 +25,26 @@ import type {
   SpendTrendData,
   MetaAdsSummary,
 } from '../types';
+import type {
+  User,
+  UserListItem,
+  LoginCredentials,
+  LoginResponse,
+  CreateUserDto,
+  UpdateUserDto,
+  Role,
+  PageDefinition,
+} from '../types/auth';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 class ApiService {
   private client: AxiosInstance;
+  private isRefreshing = false;
+  private failedQueue: Array<{
+    resolve: (value: unknown) => void;
+    reject: (error: unknown) => void;
+  }> = [];
 
   constructor() {
     this.client = axios.create({
@@ -40,9 +55,79 @@ class ApiService {
       },
     });
 
+    // Request interceptor - Add Bearer token
+    this.client.interceptors.request.use(
+      (config: InternalAxiosRequestConfig) => {
+        const token = localStorage.getItem('accessToken');
+        if (token && config.headers) {
+          config.headers.Authorization = `Bearer ${token}`;
+        }
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+
+    // Response interceptor - Handle 401 and refresh token
     this.client.interceptors.response.use(
       (response) => response,
-      (error) => {
+      async (error) => {
+        const originalRequest = error.config;
+
+        // If 401 and not a refresh request and not already retrying
+        if (
+          error.response?.status === 401 &&
+          !originalRequest._retry &&
+          !originalRequest.url?.includes('/auth/login') &&
+          !originalRequest.url?.includes('/auth/refresh')
+        ) {
+          if (this.isRefreshing) {
+            // Queue the request while refreshing
+            return new Promise((resolve, reject) => {
+              this.failedQueue.push({ resolve, reject });
+            })
+              .then(() => {
+                originalRequest.headers.Authorization = `Bearer ${localStorage.getItem('accessToken')}`;
+                return this.client(originalRequest);
+              })
+              .catch((err) => Promise.reject(err));
+          }
+
+          originalRequest._retry = true;
+          this.isRefreshing = true;
+
+          try {
+            const refreshToken = localStorage.getItem('refreshToken');
+            if (!refreshToken) {
+              throw new Error('No refresh token');
+            }
+
+            const response = await this.client.post<ApiResponse<{ accessToken: string }>>(
+              '/auth/refresh',
+              { refreshToken }
+            );
+
+            const newAccessToken = response.data.data.accessToken;
+            localStorage.setItem('accessToken', newAccessToken);
+
+            // Process queued requests
+            this.failedQueue.forEach((prom) => prom.resolve(null));
+            this.failedQueue = [];
+
+            originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
+            return this.client(originalRequest);
+          } catch (refreshError) {
+            // Refresh failed - clear tokens and redirect to login
+            this.failedQueue.forEach((prom) => prom.reject(refreshError));
+            this.failedQueue = [];
+            localStorage.removeItem('accessToken');
+            localStorage.removeItem('refreshToken');
+            window.location.href = '/login';
+            return Promise.reject(refreshError);
+          } finally {
+            this.isRefreshing = false;
+          }
+        }
+
         console.error('API Error:', error.response?.data || error.message);
         return Promise.reject(error);
       }
@@ -317,6 +402,117 @@ class ApiService {
       intervalMinutes: number;
     }>>('/dashboard/sync-status');
     return response.data.data;
+  }
+
+  // ===============================
+  // Authentication
+  // ===============================
+
+  async login(credentials: LoginCredentials): Promise<LoginResponse> {
+    const response = await this.client.post<ApiResponse<LoginResponse>>(
+      '/auth/login',
+      credentials
+    );
+    return response.data.data;
+  }
+
+  async logout(refreshToken: string): Promise<void> {
+    await this.client.post('/auth/logout', { refreshToken });
+  }
+
+  async getCurrentUser(): Promise<User> {
+    const response = await this.client.get<ApiResponse<User>>('/auth/me');
+    return response.data.data;
+  }
+
+  async refreshToken(refreshToken: string): Promise<{ accessToken: string }> {
+    const response = await this.client.post<ApiResponse<{ accessToken: string }>>(
+      '/auth/refresh',
+      { refreshToken }
+    );
+    return response.data.data;
+  }
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    await this.client.post('/auth/change-password', {
+      currentPassword,
+      newPassword,
+    });
+  }
+
+  // ===============================
+  // Users Management
+  // ===============================
+
+  async getUsers(): Promise<UserListItem[]> {
+    const response = await this.client.get<ApiResponse<UserListItem[]>>('/users');
+    return response.data.data;
+  }
+
+  async getUser(id: number): Promise<User> {
+    const response = await this.client.get<ApiResponse<User>>(`/users/${id}`);
+    return response.data.data;
+  }
+
+  async createUser(user: CreateUserDto): Promise<User> {
+    const response = await this.client.post<ApiResponse<User>>('/users', user);
+    return response.data.data;
+  }
+
+  async updateUser(id: number, user: UpdateUserDto): Promise<User> {
+    const response = await this.client.put<ApiResponse<User>>(`/users/${id}`, user);
+    return response.data.data;
+  }
+
+  async deleteUser(id: number): Promise<void> {
+    await this.client.delete(`/users/${id}`);
+  }
+
+  // ===============================
+  // Roles Management
+  // ===============================
+
+  async getRoles(): Promise<Role[]> {
+    const response = await this.client.get<ApiResponse<Role[]>>('/roles');
+    return response.data.data;
+  }
+
+  async getRole(id: number): Promise<Role> {
+    const response = await this.client.get<ApiResponse<Role>>(`/roles/${id}`);
+    return response.data.data;
+  }
+
+  async getPages(): Promise<PageDefinition[]> {
+    const response = await this.client.get<ApiResponse<PageDefinition[]>>('/roles/pages');
+    return response.data.data;
+  }
+
+  async createRole(name: string, description: string): Promise<Role> {
+    const response = await this.client.post<ApiResponse<Role>>('/roles', {
+      name,
+      description,
+    });
+    return response.data.data;
+  }
+
+  async updateRole(id: number, data: { name?: string; description?: string }): Promise<Role> {
+    const response = await this.client.put<ApiResponse<Role>>(`/roles/${id}`, data);
+    return response.data.data;
+  }
+
+  async updateRolePermissions(
+    id: number,
+    permissions: Array<{ pageSlug: string; canView: boolean }>
+  ): Promise<Role> {
+    const response = await this.client.put<ApiResponse<Role>>(
+      `/roles/${id}/permissions`,
+      { permissions }
+    );
+    return response.data.data;
+  }
+
+  async deleteRole(id: number): Promise<void> {
+    await this.client.delete(`/roles/${id}`);
   }
 }
 

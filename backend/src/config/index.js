@@ -97,6 +97,13 @@ export const config = {
   cors: {
     frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
   },
+
+  // JWT Authentication
+  jwt: {
+    secret: process.env.JWT_SECRET || 'bi-crepaldi-dev-secret-change-in-production-2024',
+    accessTokenExpiry: process.env.JWT_ACCESS_EXPIRY || '15m',
+    refreshTokenExpiry: process.env.JWT_REFRESH_EXPIRY || '7d',
+  },
 };
 
 export default config;

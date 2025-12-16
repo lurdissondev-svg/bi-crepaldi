@@ -5,6 +5,7 @@ import leadSaleCorrelator from '../services/leadSaleCorrelator.js';
 import syncService from '../services/sync.service.js';
 import customerAnalyticsService from '../services/customer-analytics.service.js';
 import { getDateRanges, formatCurrency, getDecade } from '../utils/dateUtils.js';
+import { getInfoDiasUteis } from '../utils/businessDays.js';
 import logger from '../utils/logger.js';
 import config from '../config/index.js';
 
@@ -511,6 +512,11 @@ export const dashboardController = {
         });
       }
 
+      // Profissionais: prioriza dados do Bitrix (deals), senão usa faturamento Belle
+      const profissionais = dealsAnalytics.profissionais?.length > 0
+        ? dealsAnalytics.profissionais
+        : faturamento.profissionais || [];
+
       res.json({
         success: true,
         data: {
@@ -531,7 +537,7 @@ export const dashboardController = {
               meta: 100000,
             },
           },
-          profissionais: faturamento.profissionais || [],
+          profissionais,
         },
       });
     } catch (error) {
@@ -625,15 +631,15 @@ export const dashboardController = {
       // Buscar faturamento por categoria de meta (SPA, Convênios, Bela Laser, Nutrologia)
       const faturamentoPorCategoria = await belleService.getFaturamentoParaMetas(startDate, endDate);
 
-      // Calcular dias no período
-      const inicio = new Date(startDate);
-      const fim = new Date(endDate);
-      const hoje = new Date();
-      const totalDias = Math.ceil((fim - inicio) / (1000 * 60 * 60 * 24)) + 1;
-      const diasPassados = Math.min(totalDias, Math.ceil((hoje - inicio) / (1000 * 60 * 60 * 24)) + 1);
-      const diasRestantes = Math.max(0, totalDias - diasPassados);
+      // Calcular dias úteis no período (exclui finais de semana e feriados de Cuiabá)
+      const { totalDiasUteis, diasUteisPassados, diasUteisRestantes } = getInfoDiasUteis(startDate, endDate);
 
-      // Calcular expectativa (% esperado até hoje baseado nos dias passados)
+      // Usar dias úteis para os cálculos
+      const totalDias = totalDiasUteis;
+      const diasPassados = diasUteisPassados;
+      const diasRestantes = diasUteisRestantes;
+
+      // Calcular expectativa (% esperado até hoje baseado nos dias úteis passados)
       const expectativaPct = totalDias > 0 ? (diasPassados / totalDias) * 100 : 0;
 
       // Função para calcular realidade e diária para cada meta
@@ -709,22 +715,35 @@ export const dashboardController = {
 
   async getPacientes(req, res) {
     try {
-      const { data_inicio, data_fim } = req.query;
+      const { data_inicio, data_fim, centros_custo } = req.query;
       const dateRanges = getDateRanges();
 
       const startDate = data_inicio || dateRanges.thisYear.start;
       const endDate = data_fim || dateRanges.thisYear.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',').map(Number) : [];
 
-      const pacientesAnalytics = await belleService.getAnalyticsPacientes(startDate, endDate);
+      const timer = Date.now();
+
+      // Usar banco de dados como fonte primária (muito mais rápido e tem nome do cliente!)
+      let pacientesAnalytics;
+      try {
+        pacientesAnalytics = await dashboardDBService.getPacientesAnalyticsFromDB(startDate, endDate, centrosCusto);
+        logger.info(`[Pacientes] Dados do PostgreSQL em ${Date.now() - timer}ms - ${pacientesAnalytics.totalClientes} clientes`);
+      } catch (dbError) {
+        // Fallback para API Belle se o banco falhar
+        logger.warn('[Pacientes] Fallback para API Belle:', dbError.message);
+        const belleData = await belleService.getAnalyticsPacientes(startDate, endDate);
+        pacientesAnalytics = {
+          faturamentoPaciente: belleData.faturamentoPorPaciente,
+          potenciaisMais4Meses: belleData.potenciaisMais4Meses,
+          potenciaisMenos4Meses: belleData.potenciaisMenos4Meses,
+          totalClientes: belleData.totalClientes,
+        };
+      }
 
       res.json({
         success: true,
-        data: {
-          faturamentoPaciente: pacientesAnalytics.faturamentoPorPaciente,
-          potenciaisMais4Meses: pacientesAnalytics.potenciaisMais4Meses,
-          potenciaisMenos4Meses: pacientesAnalytics.potenciaisMenos4Meses,
-          totalClientes: pacientesAnalytics.totalClientes,
-        },
+        data: pacientesAnalytics,
       });
     } catch (error) {
       logger.error('Erro ao buscar pacientes:', error);

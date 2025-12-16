@@ -1,6 +1,8 @@
-import { pool } from '../database/index.js';
+import db from '../database/index.js';
 import { contarDiasUteis } from '../utils/businessDays.js';
 import logger from '../utils/logger.js';
+
+const { pool } = db;
 
 /**
  * Get business days configuration for a year

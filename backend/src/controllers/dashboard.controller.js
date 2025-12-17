@@ -24,21 +24,23 @@ export const dashboardController = {
 
       const timer = Date.now();
 
-      // Buscar dados em paralelo - leads do banco (rápido), resto da API
+      // TUDO DO BANCO - sem chamadas a APIs externas (Bitrix24/Belle offline)
       const [
         leadsAnalytics,
-        dealsAnalytics,
+        dealsWonData,
         faturamentoAtual,
         faturamentoAnterior,
       ] = await Promise.all([
-        // Leads do banco de dados (muito mais rápido!)
-        dashboardDBService.getLeadsAnalytics(startDate, endDate).catch(err => {
-          logger.warn('[Resumo] Fallback leads para API:', err.message);
-          return bitrix24Service.getLeadsAnalytics(startDate, endDate);
-        }),
-        bitrix24Service.getDealsAnalytics(startDate, endDate),
-        belleService.getFaturamentoContasReceber(startDate, endDate, centrosCusto),
-        belleService.getFaturamentoContasReceber(
+        // Leads do banco de dados
+        dashboardDBService.getLeadsAnalytics(startDate, endDate),
+        // Deals WON do banco (substitui bitrix24Service.getDealsAnalytics)
+        dashboardDBService.getDealsWonFromDB(startDate, endDate).catch(() => ({
+          leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0
+        })),
+        // Faturamento do banco (substitui belleService.getFaturamentoContasReceber)
+        dashboardDBService.getFaturamentoFromDB(startDate, endDate, centrosCusto),
+        // Faturamento mês anterior do banco
+        dashboardDBService.getFaturamentoFromDB(
           dateRanges.lastMonth.start,
           dateRanges.lastMonth.end,
           centrosCusto
@@ -57,8 +59,10 @@ export const dashboardController = {
       // Leads e conversões
       const leadsNovos = leadsAnalytics.categorized.new + leadsAnalytics.categorized.inProgress;
       const leadsAgendados = leadsAnalytics.categorized.converted;
-      const pacientesNovoVenda = dealsAnalytics.won || 0;
-      const ticketMedioPacienteNovo = dealsAnalytics.averageTicket || 0;
+      const pacientesNovoVenda = dealsWonData.wonDealsCount || 0;
+      const ticketMedioPacienteNovo = dealsWonData.wonDealsCount > 0
+        ? (dealsWonData.wonDealsValue / dealsWonData.wonDealsCount)
+        : 0;
 
       // Buscar estatísticas de clientes recorrentes do banco de dados
       let returningStats;
@@ -280,38 +284,55 @@ export const dashboardController = {
       let leadsAnalytics;
       let dealsWonData = { leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0 };
       let dealsLostData = { byMotivoDesqualificacao: [], lostDealsCount: 0 };
-      let procedimentosMaisVendidos = [];
+      let procedimentosMaisVendidos = []; // Por faturamento (valor)
+      let procedimentosMaisQuantidade = []; // Por quantidade vendida
+      let procedimentosPorEstabelecimento = {}; // Rankings por estabelecimento
       let profissionaisMaisVendas = [];
       const timer = Date.now();
 
-      // Termos a serem filtrados dos procedimentos (não são procedimentos reais)
-      const filteredProcedimentos = ['plano personalizado'];
-
       try {
-        // Buscar leads do banco, deals WON da API, deals LOST, procedimentos, profissionais e motivos de desqualificação
-        const [dbLeads, wonDeals, lostDeals, apiProcedimentos, apiProfissionais, motivosDesqualificacao] = await Promise.all([
+        // Verifica se há dados no cache para carregamento rápido de profissionais
+        const cacheData = await dashboardDBService.hasCacheData(startDate, endDate).catch(() => ({
+          hasProcedimentos: false,
+          hasProfissionais: false,
+        }));
+
+        // Buscar TUDO do banco de dados (muito mais rápido que API!)
+        // Deals WON e LOST agora vêm do PostgreSQL em vez de chamadas lentas à API Bitrix24
+        const [dbLeads, wonDeals, lostDeals, dbProcedimentos, dbProcsByQtd, dbProcsPorEstab, apiProfissionais, motivosDesqualificacao] = await Promise.all([
           dashboardDBService.getLeadsAnalytics(startDate, endDate),
-          bitrix24Service.getDealsWonByLeads(startDate, endDate).catch(err => {
-            logger.warn('[Marketing] Erro ao buscar deals WON:', err.message);
+          // DEALS WON DO BANCO (antes era bitrix24Service.getDealsWonByLeads - lento!)
+          dashboardDBService.getDealsWonFromDB(startDate, endDate).catch(err => {
+            logger.warn('[Marketing] Erro ao buscar deals WON do banco:', err.message);
             return { leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0 };
           }),
-          // Buscar deals LOST por motivo de desqualificação
-          bitrix24Service.getDealsLostByMotivoDesqualificacao(startDate, endDate).catch(err => {
-            logger.warn('[Marketing] Erro ao buscar deals LOST:', err.message);
+          // DEALS LOST DO BANCO (antes era bitrix24Service.getDealsLostByMotivoDesqualificacao - lento!)
+          dashboardDBService.getDealsLostFromDB(startDate, endDate).catch(err => {
+            logger.warn('[Marketing] Erro ao buscar deals LOST do banco:', err.message);
             return { byMotivoDesqualificacao: [], lostDealsCount: 0 };
           }),
-          // Usar APIs Belle (movimentacao_detalhada + venda_planos) para procedimentos
-          belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(err => {
-            logger.warn('[Marketing] Erro ao buscar procedimentos da API Belle:', err.message);
-            // Fallback para banco de dados
-            return dashboardDBService.getProcedimentosMaisVendidos(startDate, endDate, 20).catch(() => []);
-          }),
-          // Usar APIs Belle (movimentacao_detalhada + venda_planos) para profissionais
-          belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(err => {
-            logger.warn('[Marketing] Erro ao buscar profissionais da API Belle:', err.message);
-            // Fallback para banco de dados
-            return dashboardDBService.getProfissionaisMaisVendas(startDate, endDate, 20).catch(() => []);
-          }),
+          // PRIORIZA CACHE: Procedimentos ordenados por VALOR (faturamento)
+          cacheData.hasProcedimentos
+            ? dashboardDBService.getProcedimentosFromCache(startDate, endDate, 20)
+            : belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(err => {
+                logger.warn('[Marketing] Erro ao buscar procedimentos da API Belle:', err.message);
+                return dashboardDBService.getProcedimentosFromVendas(startDate, endDate, 20).catch(() => []);
+              }),
+          // Procedimentos ordenados por QUANTIDADE vendida
+          cacheData.hasProcedimentos
+            ? dashboardDBService.getProcedimentosByQuantidade(startDate, endDate, 20)
+            : [],
+          // Procedimentos agrupados POR ESTABELECIMENTO (top por valor e quantidade para cada unidade)
+          cacheData.hasProcedimentos
+            ? dashboardDBService.getProcedimentosPorEstabelecimento(startDate, endDate, 10)
+            : {},
+          // PRIORIZA CACHE: Se tiver dados no cache, usa (instantâneo). Senão usa API Belle (lento).
+          cacheData.hasProfissionais
+            ? dashboardDBService.getProfissionaisFromCache(startDate, endDate, 20)
+            : belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(err => {
+                logger.warn('[Marketing] Erro ao buscar profissionais da API Belle:', err.message);
+                return dashboardDBService.getProfissionaisMaisVendas(startDate, endDate, 20).catch(() => []);
+              }),
           // Buscar motivos de desqualificação pela data de MODIFICAÇÃO (quando o lead foi desqualificado)
           dashboardDBService.getMotivosDesqualificacao(startDate, endDate).catch(err => {
             logger.warn('[Marketing] Erro ao buscar motivos desqualificação:', err.message);
@@ -321,27 +342,26 @@ export const dashboardController = {
         leadsAnalytics = dbLeads;
         dealsWonData = wonDeals;
         dealsLostData = lostDeals;
-        // Filtrar procedimentos que não são reais (ex: "Plano Personalizado")
-        procedimentosMaisVendidos = apiProcedimentos.filter(p =>
-          !filteredProcedimentos.some(term => p.nome.toLowerCase().includes(term))
-        );
+        // Procedimentos vêm do cache ou da API Belle (extrai de servicos em venda_planos)
+        procedimentosMaisVendidos = dbProcedimentos; // Por faturamento
+        procedimentosMaisQuantidade = dbProcsByQtd; // Por quantidade vendida
+        procedimentosPorEstabelecimento = dbProcsPorEstab; // Por estabelecimento
         profissionaisMaisVendas = apiProfissionais;
         // Substituir byMotivoDesqualificacao pelo novo método que usa bitrix_modified_at
         leadsAnalytics.byMotivoDesqualificacao = motivosDesqualificacao.byMotivoDesqualificacao;
         logger.info(`[Marketing] Dados carregados em ${Date.now() - timer}ms - ${leadsAnalytics.total} leads, ${dealsWonData.wonDealsCount} deals WON, ${dealsLostData.lostDealsCount} deals LOST, ${procedimentosMaisVendidos.length} procedimentos, ${profissionaisMaisVendas.length} profissionais, ${motivosDesqualificacao.totalDesqualificados} desqualificados`);
       } catch (dbError) {
-        // Fallback para API se o banco falhar
-        logger.warn('[Marketing] Fallback para API Bitrix24:', dbError.message);
-        const [apiLeads, apiWonDeals, apiLostDeals, apiProcs, apiProfs] = await Promise.all([
+        // Fallback para API APENAS para leads (mantém banco para deals que já estão sincronizados)
+        logger.warn('[Marketing] Fallback para API Bitrix24 (leads apenas):', dbError.message);
+        const [apiLeads, apiProcs, apiProfs] = await Promise.all([
           bitrix24Service.getLeadsAnalytics(startDate, endDate),
-          bitrix24Service.getDealsWonByLeads(startDate, endDate).catch(() => ({ leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0 })),
-          bitrix24Service.getDealsLostByMotivoDesqualificacao(startDate, endDate).catch(() => ({ byMotivoDesqualificacao: [], lostDealsCount: 0 })),
           belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(() => []),
           belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(() => []),
         ]);
         leadsAnalytics = apiLeads;
-        dealsWonData = apiWonDeals;
-        dealsLostData = apiLostDeals;
+        // Deals continuam zerados se o banco falhar - não fazer chamada lenta à API
+        dealsWonData = { leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0 };
+        dealsLostData = { byMotivoDesqualificacao: [], lostDealsCount: 0 };
         procedimentosMaisVendidos = apiProcs;
         profissionaisMaisVendas = apiProfs;
         logger.info(`[Marketing] Dados da API em ${Date.now() - timer}ms`);
@@ -485,7 +505,9 @@ export const dashboardController = {
           // Motivos de desqualificação de DEALS perdidos (complementa leads)
           dealsLostByMotivoDesqualificacao: dealsLostData.byMotivoDesqualificacao,
           lostDealsCount: dealsLostData.lostDealsCount,
-          procedimentosMaisVendidos, // Top procedimentos da API Belle
+          procedimentosMaisVendidos, // Top procedimentos por FATURAMENTO
+          procedimentosMaisQuantidade, // Top procedimentos por QUANTIDADE vendida
+          procedimentosPorEstabelecimento, // Rankings por estabelecimento (byValor, byQuantidade)
           profissionaisMaisVendas, // Top profissionais da API Belle
         },
       });
@@ -511,14 +533,16 @@ export const dashboardController = {
 
       const timer = Date.now();
 
-      const [leadsAnalytics, dealsAnalytics, faturamento] = await Promise.all([
-        // Leads do banco de dados (muito mais rápido!)
-        dashboardDBService.getLeadsAnalytics(startDate, endDate).catch(err => {
-          logger.warn('[Comercial] Fallback leads para API:', err.message);
-          return bitrix24Service.getLeadsAnalytics(startDate, endDate);
-        }),
-        bitrix24Service.getDealsAnalytics(startDate, endDate),
-        belleService.getAnalyticsFaturamento(startDate, endDate, []),
+      // TUDO DO BANCO - sem chamadas a APIs externas (Bitrix24/Belle offline)
+      const [leadsAnalytics, dealsWonData, faturamento] = await Promise.all([
+        // Leads do banco de dados
+        dashboardDBService.getLeadsAnalytics(startDate, endDate),
+        // Deals WON do banco (substitui bitrix24Service.getDealsAnalytics)
+        dashboardDBService.getDealsWonFromDB(startDate, endDate).catch(() => ({
+          leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0
+        })),
+        // Faturamento do banco (substitui belleService.getAnalyticsFaturamento)
+        dashboardDBService.getFaturamentoFromDB(startDate, endDate, []),
       ]);
 
       logger.info(`[Comercial] Dados carregados em ${Date.now() - timer}ms`);
@@ -541,8 +565,12 @@ export const dashboardController = {
           l.status_semantica === 'success'
         ).length;
 
+        // Calcular ticket médio a partir dos deals do banco
+        const averageTicket = dealsWonData.wonDealsCount > 0
+          ? (dealsWonData.wonDealsValue / dealsWonData.wonDealsCount)
+          : 0;
         // Estimar valor baseado na média do ticket
-        const valorEstimado = convertedLeads * (dealsAnalytics.averageTicket || 0);
+        const valorEstimado = convertedLeads * averageTicket;
 
         return {
           origem: origem.name,
@@ -602,10 +630,8 @@ export const dashboardController = {
         });
       }
 
-      // Profissionais: prioriza dados do Bitrix (deals), senão usa faturamento Belle
-      const profissionais = dealsAnalytics.profissionais?.length > 0
-        ? dealsAnalytics.profissionais
-        : faturamento.profissionais || [];
+      // Profissionais: usa dados do faturamento (banco de dados)
+      const profissionais = faturamento.profissionais || [];
 
       res.json({
         success: true,
@@ -650,35 +676,59 @@ export const dashboardController = {
       const startDate = data_inicio || dateRanges.thisMonth.start;
       const endDate = data_fim || dateRanges.thisMonth.end;
 
-      const faturamento = await belleService.getAnalyticsFaturamento(
-        startDate, endDate, []
-      );
+      // TUDO DO BANCO - usar funções corretas que retornam profissionais e procedimentos
+      const [faturamento, profissionaisData, procedimentosData] = await Promise.all([
+        dashboardDBService.getFaturamentoFromDB(startDate, endDate, []),
+        dashboardDBService.getProfissionaisFromVendas(startDate, endDate, 50),
+        dashboardDBService.getProcedimentosPorEstabelecimentoFromVendas(startDate, endDate, 100),
+      ]);
 
-      // Desempenho por responsável
-      const desempenho = faturamento.profissionais?.map(prof => ({
+      // Desempenho por responsável - usar dados de profissionaisData
+      const desempenho = profissionaisData.map(prof => ({
         responsavel: prof.nome,
-        totalOrcamentos: prof.vendas * 1.2 | 0,
-        valorTotalOrcado: prof.valor * 1.1,
-        aprovados: prof.vendas,
-        valorTotalAprovado: prof.valor,
-        percentual: 98, // Calcular com dados reais
-      })) || [];
+        totalOrcamentos: Math.round((prof.vendas || 0) * 1.2),
+        valorTotalOrcado: (prof.valor || 0) * 1.1,
+        aprovados: prof.vendas || 0,
+        valorTotalAprovado: prof.valor || 0,
+        percentual: 98,
+      }));
+
+      // Consolidar procedimentos de todos os estabelecimentos
+      // procedimentosData tem estrutura: { "Estab": { byValor: [], byQuantidade: [] } }
+      const procedimentosMap = new Map();
+      Object.values(procedimentosData || {}).forEach(estabelecimento => {
+        const procs = estabelecimento?.byValor || [];
+        procs.forEach(proc => {
+          const key = proc.nome || proc.procedimento;
+          if (!key) return;
+          if (procedimentosMap.has(key)) {
+            const existing = procedimentosMap.get(key);
+            existing.quantidade += proc.quantidade || 0;
+            existing.valor += proc.valor || 0;
+          } else {
+            procedimentosMap.set(key, {
+              nome: key,
+              quantidade: proc.quantidade || 0,
+              valor: proc.valor || 0,
+            });
+          }
+        });
+      });
 
       // Ticket médio por procedimento
-      const ticketMedioPorProcedimento = faturamento.procedimentos?.map(proc => ({
+      const ticketMedioPorProcedimento = Array.from(procedimentosMap.values()).map(proc => ({
         procedimento: proc.nome,
         ticketMedio: proc.quantidade > 0 ? proc.valor / proc.quantidade : 0,
         ticketMedioFormatado: formatCurrency(proc.quantidade > 0 ? proc.valor / proc.quantidade : 0),
         vendas: proc.quantidade,
         faturamentoTotal: proc.valor,
         faturamentoTotalFormatado: formatCurrency(proc.valor),
-      })) || [];
+      })).sort((a, b) => b.faturamentoTotal - a.faturamentoTotal);
 
       // Top 80/20 (Pareto)
-      const totalFaturamento = faturamento.faturamentoTotal || 1;
+      const totalFaturamento = faturamento?.faturamentoTotal || 1;
       let acumulado = 0;
       const pareto8020 = ticketMedioPorProcedimento
-        .sort((a, b) => b.faturamentoTotal - a.faturamentoTotal)
         .map(item => {
           acumulado += item.faturamentoTotal;
           return {
@@ -694,8 +744,8 @@ export const dashboardController = {
           desempenho,
           ticketMedioPorProcedimento: ticketMedioPorProcedimento.slice(0, 20),
           pareto8020,
-          totalFaturamento: faturamento.faturamentoTotal,
-          totalFaturamentoFormatado: formatCurrency(faturamento.faturamentoTotal),
+          totalFaturamento: faturamento?.faturamentoTotal || 0,
+          totalFaturamentoFormatado: formatCurrency(faturamento?.faturamentoTotal || 0),
         },
       });
     } catch (error) {
@@ -719,7 +769,26 @@ export const dashboardController = {
       const endDate = data_fim || dateRanges.thisMonth.end;
 
       // Buscar faturamento por categoria de meta (SPA, Convênios, Bela Laser, Nutrologia)
-      const faturamentoPorCategoria = await belleService.getFaturamentoParaMetas(startDate, endDate);
+      // TUDO DO BANCO - sem chamadas a APIs externas
+      const faturamento = await dashboardDBService.getFaturamentoFromDB(startDate, endDate, []);
+
+      // Calcular faturamento por categoria baseado nos estabelecimentos
+      const faturamentoPorCategoria = { spa: 0, convenios: 0, belaLaser: 0, nutrologia: 0 };
+      if (faturamento.porEstabelecimento) {
+        faturamento.porEstabelecimento.forEach(estab => {
+          const nomeEstab = (estab.estabelecimento || estab.nome || '').toLowerCase();
+          if (nomeEstab.includes('conv')) {
+            faturamentoPorCategoria.convenios += estab.valor || 0;
+          } else if (nomeEstab.includes('bela') || nomeEstab.includes('laser')) {
+            faturamentoPorCategoria.belaLaser += estab.valor || 0;
+          } else if (nomeEstab.includes('nutro') || nomeEstab.includes('nutri')) {
+            faturamentoPorCategoria.nutrologia += estab.valor || 0;
+          } else {
+            // Default para SPA
+            faturamentoPorCategoria.spa += estab.valor || 0;
+          }
+        });
+      }
 
       // Buscar dias úteis configurados no banco (ou calcula automaticamente)
       const totalDias = await getBusinessDaysForPeriod(startDate, endDate);
@@ -1126,38 +1195,52 @@ export const dashboardController = {
 
   async getFilterOptions(req, res) {
     try {
-      const [
-        leadStatuses,
-        leadSources,
-        dealStages,
-        dealCategories,
-        centrosCusto,
-        profissionais,
-      ] = await Promise.all([
-        bitrix24Service.getLeadStatuses(),
-        bitrix24Service.getLeadSources(),
-        bitrix24Service.getDealStages(),
-        bitrix24Service.getDealCategories(),
-        belleService.getCentrosCusto(),
-        belleService.getProfissionais(),
+      // TUDO DO BANCO - sem chamadas a APIs externas (Bitrix24/Belle offline)
+      // Buscar centros de custo e profissionais do banco de dados
+      const [centrosCustoResult, profissionaisResult] = await Promise.all([
+        dashboardDBService.getCentrosCustoFromDB().catch(() => []),
+        dashboardDBService.getProfissionaisFromVendas(
+          new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // ultimo ano
+          new Date().toISOString().split('T')[0],
+          50
+        ).catch(() => []),
       ]);
 
-      // Origem do lead (campo UF_CRM_1692640693814) - opções disponíveis
-      const origemLeadOptions = Object.entries(bitrix24Service.origemLeadMap).map(([id, name]) => ({
-        id,
-        name,
-      }));
+      // Opções de origem do lead (estáticas - baseadas no campo UF_CRM_1692640693814)
+      const origemLeadOptions = [
+        { id: 'NAO_PREENCHIDO', name: 'Não preenchido' },
+        { id: '5403', name: 'Iniciativa Interna' },
+        { id: '5405', name: 'Iniciativa do paciente' },
+      ];
+
+      // Status de lead (estáticos - do Bitrix24)
+      const leadStatuses = [
+        { id: 'NEW', name: 'Novo' },
+        { id: 'IN_PROCESS', name: 'Em atendimento' },
+        { id: 'PROCESSED', name: 'Agendou' },
+        { id: 'CONVERTED', name: 'Convertido' },
+        { id: 'JUNK', name: 'Desqualificado' },
+      ];
+
+      // Fontes de lead (estáticas)
+      const leadSources = [
+        { id: 'CALL', name: 'Ligação' },
+        { id: 'EMAIL', name: 'E-mail' },
+        { id: 'WEB', name: 'Site' },
+        { id: 'SOCIAL', name: 'Redes sociais' },
+        { id: 'OTHER', name: 'Outros' },
+      ];
 
       res.json({
         success: true,
         data: {
           leadStatuses,
           leadSources,
-          origemLeadOptions, // Opções do campo "Origem do lead" (UF_CRM_1692640693814)
-          dealStages,
-          dealCategories,
-          centrosCusto: centrosCusto.data || [],
-          profissionais: profissionais.data || [],
+          origemLeadOptions,
+          dealStages: [], // Não usado atualmente
+          dealCategories: [], // Não usado atualmente
+          centrosCusto: centrosCustoResult || [],
+          profissionais: profissionaisResult.map(p => ({ nome: p.nome })) || [],
         },
       });
     } catch (error) {

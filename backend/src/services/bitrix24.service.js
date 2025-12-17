@@ -119,7 +119,7 @@ const PROFISSIONAIS_MAP = {
   '9038': 'TAIRANE DE SOUZA MORAES',
 };
 
-// Mapeamento do campo "Motivo de desqualificação" (UF_CRM_1695041103)
+// Mapeamento do campo "Motivo de desqualificação" (UF_CRM_1695041103) - CAMPO ANTIGO
 const MOTIVO_DESQUALIFICACAO_MAP = {
   '348': 'Reação de Instagram',
   '350': 'Conversa não respondida',
@@ -143,6 +143,35 @@ const MOTIVO_DESQUALIFICACAO_MAP = {
   '7724': 'Envio da Pesquisa de Satisfação',
 };
 
+// Mapeamento do campo "Desqualificado" (UF_CRM_1748611226066) - CAMPO CORRETO/NOVO
+const DESQUALIFICADO_MAP = {
+  '7952': 'Propaganda/vendedor',
+  '7954': 'Envio de Curriculo',
+  '7956': 'Envio de Pós pela enfermagem',
+  '7958': 'Envio da Pesquisa de Satisfação',
+  '7960': 'Sem resposta após a 7ª Tentativa',
+  '7962': 'Reação do Instagram',
+  '8012': 'Solicitação de exame/receita/atestado',
+  '8014': 'Paciente não quis agendar por não ter vaga de imediato - Convenios',
+  '8016': 'Duvidas sobre exame/receita/agendamento',
+  '8018': 'Paciente da convênios deixou de responder',
+  '8020': 'Paciente Agradeceu a Ultima Mensagem',
+  '8022': 'Assunto não relacionado a Clinica',
+  '8024': 'Paciente optou por outra Clinica',
+  '8032': 'Não é do estado e não pretende vir',
+  '8034': 'O Convenio do Paciente não é atendido na clinica',
+  '8036': 'Paciente Solicitou Não Receber mais Mensagens',
+  '8038': 'Paciente desistiu do Cartão Presente',
+  '8040': 'Envio de Nota Fiscal',
+  '8042': 'Paciente Optou Por Não Continuar o Atendimento e Não deu Mais Informações',
+  '8126': 'Lead do Instagram Sem Contato',
+  '8274': 'Lead não possui mais o telefone',
+  '8478': 'Migração para novo número nutrologia',
+  '8506': 'Convite',
+  '8518': 'Envio de exame',
+  '8530': 'Migração para novo número Convênios',
+};
+
 class Bitrix24Service {
   constructor() {
     this.baseUrl = config.bitrix24.webhookUrl;
@@ -157,6 +186,7 @@ class Bitrix24Service {
     this.campanhaMap = CAMPANHA_MAP;
     this.profissionaisMap = PROFISSIONAIS_MAP;
     this.motivoDesqualificacaoMap = MOTIVO_DESQUALIFICACAO_MAP;
+    this.desqualificadoMap = DESQUALIFICADO_MAP;
 
     // Cache para chamadas de API - TTL de 3 minutos
     this.cache = new NodeCache({

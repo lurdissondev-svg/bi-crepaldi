@@ -1,6 +1,7 @@
 import db from '../database/index.js';
 import logger from '../utils/logger.js';
 import { format } from 'date-fns';
+import belleService from './belle.service.js';
 
 /**
  * Serviço de Dashboard que busca dados do PostgreSQL
@@ -1020,32 +1021,39 @@ class DashboardDBService {
 
   /**
    * Mapeia ID de motivo de desqualificação para nome
+   * Usa o campo "Desqualificado" (UF_CRM_1748611226066)
    */
   getMotivoDesqualificacaoName(motivoId) {
-    const MOTIVO_DESQUALIFICACAO_MAP = {
-      '348': 'Reação de Instagram',
-      '350': 'Conversa não respondida',
-      '352': 'Conversa não respondida após várias tentativas',
-      '354': 'Preço',
-      '618': 'Informações Adicionais',
-      '626': 'Marketing/Propaganda/Vendedor',
-      '810': 'Não compareceu',
-      '1522': 'Não é de Cuiabá',
-      '1524': 'Está em Viagem',
-      '7056': 'Solicitou Contato Futuro',
-      '7058': 'Problemas financeiros',
-      '7060': 'Não Possui Interesse no Momento',
-      '7062': 'Agendou para outro paciente',
-      '7064': 'Telefone Incorreto',
-      '7066': 'Outras Prioridades no momento',
-      '7226': 'Envio de Pós pela Enfermagem',
-      '7254': 'Venda de Voucher',
-      '7446': 'Conversa finalizada e não movimentada',
-      '7456': 'Contato será retomado após o recesso',
-      '7724': 'Envio da Pesquisa de Satisfação',
+    // Mapeamento do novo campo "Desqualificado" (UF_CRM_1748611226066)
+    const DESQUALIFICADO_MAP = {
+      '7952': 'Propaganda/vendedor',
+      '7954': 'Envio de Curriculo',
+      '7956': 'Envio de Pós pela enfermagem',
+      '7958': 'Envio da Pesquisa de Satisfação',
+      '7960': 'Sem resposta após a 7ª Tentativa',
+      '7962': 'Reação do Instagram',
+      '8012': 'Solicitação de exame/receita/atestado',
+      '8014': 'Paciente não quis agendar por não ter vaga de imediato - Convenios',
+      '8016': 'Duvidas sobre exame/receita/agendamento',
+      '8018': 'Paciente da convênios deixou de responder',
+      '8020': 'Paciente Agradeceu a Ultima Mensagem',
+      '8022': 'Assunto não relacionado a Clinica',
+      '8024': 'Paciente optou por outra Clinica',
+      '8032': 'Não é do estado e não pretende vir',
+      '8034': 'O Convenio do Paciente não é atendido na clinica',
+      '8036': 'Paciente Solicitou Não Receber mais Mensagens',
+      '8038': 'Paciente desistiu do Cartão Presente',
+      '8040': 'Envio de Nota Fiscal',
+      '8042': 'Paciente Optou Por Não Continuar o Atendimento e Não deu Mais Informações',
+      '8126': 'Lead do Instagram Sem Contato',
+      '8274': 'Lead não possui mais o telefone',
+      '8478': 'Migração para novo número nutrologia',
+      '8506': 'Convite',
+      '8518': 'Envio de exame',
+      '8530': 'Migração para novo número Convênios',
       'NAO_PREENCHIDO': 'Não preenchido',
     };
-    return MOTIVO_DESQUALIFICACAO_MAP[String(motivoId)] || 'Não identificado';
+    return DESQUALIFICADO_MAP[String(motivoId)] || 'Não identificado';
   }
 
   // ==================== MARKETING - PROCEDIMENTOS E PROFISSIONAIS ====================
@@ -1141,8 +1149,8 @@ class DashboardDBService {
   }
 
   /**
-   * Busca motivos de desqualificação baseado na data de MODIFICAÇÃO do lead
-   * (quando o lead foi efetivamente desqualificado), não na data de criação
+   * Busca motivos de desqualificação baseado no campo "Desqualificado" (UF_CRM_1748611226066)
+   * Filtra pela data de MODIFICAÇÃO do lead (quando o campo foi preenchido)
    * @param {string} startDate - Data início (yyyy-MM-dd)
    * @param {string} endDate - Data fim (yyyy-MM-dd)
    */
@@ -1150,18 +1158,18 @@ class DashboardDBService {
     const timer = Date.now();
 
     try {
-      // Busca leads desqualificados no período pela data de MODIFICAÇÃO
-      // Isso captura leads que foram desqualificados neste período,
-      // independente de quando foram criados
+      // Busca leads com campo "Desqualificado" (UF_CRM_1748611226066) preenchido
+      // no período pela data de MODIFICAÇÃO
       const result = await db.query(`
         SELECT
-          l.custom_fields->>'UF_CRM_1695041103' as motivo_id,
+          l.custom_fields->>'UF_CRM_1748611226066' as motivo_id,
           COUNT(*) as count
         FROM leads l
-        WHERE l.status_id = 'JUNK'
+        WHERE l.custom_fields->>'UF_CRM_1748611226066' IS NOT NULL
+          AND l.custom_fields->>'UF_CRM_1748611226066' != ''
           AND l.bitrix_modified_at >= $1
           AND l.bitrix_modified_at < ($2::date + interval '1 day')
-        GROUP BY l.custom_fields->>'UF_CRM_1695041103'
+        GROUP BY l.custom_fields->>'UF_CRM_1748611226066'
         ORDER BY count DESC
       `, [startDate, endDate]);
 
@@ -1190,6 +1198,779 @@ class DashboardDBService {
         byMotivoDesqualificacao: [],
         totalDesqualificados: 0,
       };
+    }
+  }
+
+  // ==================== PROCEDIMENTOS E PROFISSIONAIS DO CACHE ====================
+
+  /**
+   * Busca procedimentos mais vendidos do cache (carregamento instantâneo)
+   * Usa dados pré-agregados mensalmente pelo sync
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limit - Número máximo de resultados
+   */
+  async getProcedimentosFromCache(startDate, endDate, limit = 20) {
+    const timer = Date.now();
+
+    try {
+      // Extrai meses do período
+      const startMonth = startDate.substring(0, 7); // yyyy-MM
+      const endMonth = endDate.substring(0, 7);
+
+      // Termos a excluir (não são procedimentos reais)
+      const excludeTerms = ['plano personalizado', 'voucher', 'produtos', 'credito', 'cortesia'];
+
+      // Query que agrega dados de múltiplos meses com filtro de exclusão
+      const query = `
+        SELECT
+          nome,
+          SUM(quantidade) as quantidade,
+          SUM(valor) as valor
+        FROM procedimentos_cache
+        WHERE ano_mes >= $1 AND ano_mes <= $2
+          AND NOT (LOWER(nome) LIKE ANY(ARRAY[${excludeTerms.map((_, i) => `$${i + 4}`).join(', ')}]))
+        GROUP BY nome
+        ORDER BY valor DESC
+        LIMIT $3
+      `;
+
+      const excludePatterns = excludeTerms.map(t => `%${t}%`);
+
+      const result = await db.query(query, [startMonth, endMonth, limit, ...excludePatterns]);
+
+      logger.debug(`[DB Cache] getProcedimentosFromCache: ${result.rows.length} procedimentos em ${Date.now() - timer}ms`);
+
+      return result.rows.map(row => ({
+        nome: row.nome,
+        quantidade: parseInt(row.quantidade) || 0,
+        valor: parseFloat(row.valor) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB Cache] Erro em getProcedimentosFromCache:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca procedimentos ordenados por quantidade (mais vendidos em unidades)
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limit - Número máximo de resultados
+   */
+  async getProcedimentosByQuantidade(startDate, endDate, limit = 20) {
+    const timer = Date.now();
+
+    try {
+      // Extrai meses do período
+      const startMonth = startDate.substring(0, 7); // yyyy-MM
+      const endMonth = endDate.substring(0, 7);
+
+      // Termos a excluir (não são procedimentos reais)
+      const excludeTerms = ['plano personalizado', 'voucher', 'produtos', 'credito', 'cortesia'];
+
+      // Query que agrega dados de múltiplos meses ordenando por QUANTIDADE
+      const query = `
+        SELECT
+          nome,
+          SUM(quantidade) as quantidade,
+          SUM(valor) as valor
+        FROM procedimentos_cache
+        WHERE ano_mes >= $1 AND ano_mes <= $2
+          AND NOT (LOWER(nome) LIKE ANY(ARRAY[${excludeTerms.map((_, i) => `$${i + 4}`).join(', ')}]))
+        GROUP BY nome
+        ORDER BY quantidade DESC
+        LIMIT $3
+      `;
+
+      const excludePatterns = excludeTerms.map(t => `%${t}%`);
+
+      const result = await db.query(query, [startMonth, endMonth, limit, ...excludePatterns]);
+
+      logger.debug(`[DB Cache] getProcedimentosByQuantidade: ${result.rows.length} procedimentos em ${Date.now() - timer}ms`);
+
+      return result.rows.map(row => ({
+        nome: row.nome,
+        quantidade: parseInt(row.quantidade) || 0,
+        valor: parseFloat(row.valor) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB Cache] Erro em getProcedimentosByQuantidade:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca procedimentos AGRUPADOS POR ESTABELECIMENTO
+   * Para períodos curtos (<= 14 dias), usa tabela procedimentos_diarios (dados do banco, sem delay)
+   * Para períodos maiores, usa o cache mensal
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limitPerEstab - Limite de procedimentos por estabelecimento
+   * @returns {Object} { nomeEstab: { byValor: [], byQuantidade: [] } }
+   */
+  async getProcedimentosPorEstabelecimento(startDate, endDate, limitPerEstab = 10) {
+    const timer = Date.now();
+
+    try {
+      // Calcula dias no período
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+
+      // Para períodos curtos (<= 14 dias), usa tabela procedimentos_diarios
+      // Estes dados são sincronizados a cada 5 min pelo sync (sem delay de API)
+      if (diffDays <= 14) {
+        return this.getProcedimentosPorEstabelecimentoFromDiarios(startDate, endDate, limitPerEstab);
+      }
+
+      // Para períodos maiores, usa o cache mensal (mais rápido)
+      const startMonth = startDate.substring(0, 7); // yyyy-MM
+      const endMonth = endDate.substring(0, 7);
+
+      // Termos a excluir (não são procedimentos reais)
+      const excludeTerms = ['plano personalizado', 'voucher', 'produtos', 'credito', 'cortesia'];
+
+      // Query que busca procedimentos agrupados por estabelecimento
+      const query = `
+        SELECT
+          cod_estab,
+          nome_estab,
+          nome,
+          SUM(quantidade) as quantidade,
+          SUM(valor) as valor
+        FROM procedimentos_cache
+        WHERE ano_mes >= $1 AND ano_mes <= $2
+          AND cod_estab IS NOT NULL
+          AND NOT (LOWER(nome) LIKE ANY(ARRAY[${excludeTerms.map((_, i) => `$${i + 3}`).join(', ')}]))
+        GROUP BY cod_estab, nome_estab, nome
+        ORDER BY cod_estab, valor DESC
+      `;
+
+      const excludePatterns = excludeTerms.map(t => `%${t}%`);
+      const result = await db.query(query, [startMonth, endMonth, ...excludePatterns]);
+
+      // Agrupa por estabelecimento
+      const porEstab = {};
+
+      result.rows.forEach(row => {
+        const estabKey = row.nome_estab || `Estab ${row.cod_estab}`;
+
+        if (!porEstab[estabKey]) {
+          porEstab[estabKey] = {
+            cod_estab: row.cod_estab,
+            nome_estab: estabKey,
+            procedimentos: [],
+          };
+        }
+
+        porEstab[estabKey].procedimentos.push({
+          nome: row.nome,
+          quantidade: parseInt(row.quantidade) || 0,
+          valor: parseFloat(row.valor) || 0,
+        });
+      });
+
+      // Para cada estabelecimento, criar arrays byValor e byQuantidade
+      const resultado = {};
+
+      Object.entries(porEstab).forEach(([estabKey, data]) => {
+        const procs = data.procedimentos;
+
+        resultado[estabKey] = {
+          cod_estab: data.cod_estab,
+          nome_estab: data.nome_estab,
+          byValor: procs
+            .sort((a, b) => b.valor - a.valor)
+            .slice(0, limitPerEstab)
+            .map(p => ({
+              ...p,
+              valorFormatado: p.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            })),
+          byQuantidade: [...procs]
+            .sort((a, b) => b.quantidade - a.quantidade)
+            .slice(0, limitPerEstab)
+            .map(p => ({
+              ...p,
+              valorFormatado: p.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            })),
+        };
+      });
+
+      logger.debug(`[DB Cache] getProcedimentosPorEstabelecimento: ${Object.keys(resultado).length} estabelecimentos em ${Date.now() - timer}ms`);
+
+      return resultado;
+    } catch (error) {
+      logger.error('[DB Cache] Erro em getProcedimentosPorEstabelecimento:', error.message);
+      return {};
+    }
+  }
+
+  /**
+   * Busca procedimentos por estabelecimento da TABELA PROCEDIMENTOS_DIARIOS
+   * Esta tabela é populada pelo sync a cada 5 min com dados da Belle API
+   * Extrai serviços de planos para mostrar procedimentos reais
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limitPerEstab - Limite de procedimentos por estabelecimento
+   */
+  async getProcedimentosPorEstabelecimentoFromDiarios(startDate, endDate, limitPerEstab = 10) {
+    const timer = Date.now();
+
+    try {
+      // Mapeamento de cod_estab para nome (igual ao config/index.js)
+      const ESTAB_NAMES = {
+        1: 'Dermato',
+        2: 'SPA',
+        5: 'Convênio',
+        10: 'Drips',
+        11: 'Estética',
+        12: 'Bela Laser',
+        14: 'Nutrologia',
+      };
+
+      // Query que busca procedimentos agrupados por estabelecimento da tabela procedimentos_diarios
+      const query = `
+        SELECT
+          cod_estab,
+          nome_estab,
+          nome_proc as nome,
+          SUM(quantidade) as quantidade,
+          SUM(valor) as valor
+        FROM procedimentos_diarios
+        WHERE data_ref >= $1 AND data_ref <= $2
+          AND cod_estab IS NOT NULL
+        GROUP BY cod_estab, nome_estab, nome_proc
+        ORDER BY cod_estab, valor DESC
+      `;
+
+      const result = await db.query(query, [startDate, endDate]);
+
+      // Agrupa por estabelecimento
+      const porEstab = {};
+
+      result.rows.forEach(row => {
+        // Usa nome do mapeamento ou da tabela
+        const estabKey = ESTAB_NAMES[row.cod_estab] || row.nome_estab || `Estab ${row.cod_estab}`;
+
+        if (!porEstab[estabKey]) {
+          porEstab[estabKey] = {
+            cod_estab: row.cod_estab,
+            nome_estab: estabKey,
+            procedimentos: [],
+          };
+        }
+
+        porEstab[estabKey].procedimentos.push({
+          nome: row.nome,
+          quantidade: parseInt(row.quantidade) || 0,
+          valor: parseFloat(row.valor) || 0,
+        });
+      });
+
+      // Para cada estabelecimento, criar arrays byValor e byQuantidade
+      const resultado = {};
+
+      Object.entries(porEstab).forEach(([estabKey, data]) => {
+        const procs = data.procedimentos;
+
+        resultado[estabKey] = {
+          cod_estab: data.cod_estab,
+          nome_estab: data.nome_estab,
+          byValor: procs
+            .sort((a, b) => b.valor - a.valor)
+            .slice(0, limitPerEstab)
+            .map(p => ({
+              ...p,
+              valorFormatado: p.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            })),
+          byQuantidade: [...procs]
+            .sort((a, b) => b.quantidade - a.quantidade)
+            .slice(0, limitPerEstab)
+            .map(p => ({
+              ...p,
+              valorFormatado: p.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            })),
+        };
+      });
+
+      logger.debug(`[DB Diarios] getProcedimentosPorEstabelecimentoFromDiarios: ${Object.keys(resultado).length} estabelecimentos em ${Date.now() - timer}ms`);
+
+      return resultado;
+    } catch (error) {
+      logger.error('[DB Diarios] Erro em getProcedimentosPorEstabelecimentoFromDiarios:', error.message);
+      // Fallback para vendas se tabela não existir
+      logger.warn('[DB Diarios] Fallback para getProcedimentosPorEstabelecimentoFromVendas');
+      return this.getProcedimentosPorEstabelecimentoFromVendas(startDate, endDate, limitPerEstab);
+    }
+  }
+
+  /**
+   * Busca procedimentos por estabelecimento DIRETO DA TABELA VENDAS
+   * Usa datas exatas para períodos curtos (hoje, última semana, etc.)
+   * Agrupa itens não-procedimentos (voucher, planos, etc) em "Outros" para garantir
+   * que todos os estabelecimentos com vendas apareçam no resultado
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limitPerEstab - Limite de procedimentos por estabelecimento
+   */
+  async getProcedimentosPorEstabelecimentoFromVendas(startDate, endDate, limitPerEstab = 10) {
+    const timer = Date.now();
+
+    try {
+      // Termos a agrupar em "Outros" (não são procedimentos reais mas contam como faturamento)
+      const excludeTerms = ['plano personalizado', 'voucher', 'produtos', 'credito', 'cortesia'];
+
+      // Mapeamento de cod_estab para nome (igual ao config/index.js)
+      const ESTAB_NAMES = {
+        1: 'Dermato',
+        2: 'SPA',
+        5: 'Convênio',
+        10: 'Drips',
+        11: 'Estética',
+        12: 'Bela Laser',
+        14: 'Nutrologia',
+      };
+
+      // Query que extrai itens_venda do JSON agrupando por estabelecimento
+      const query = `
+        SELECT
+          v.cod_estab,
+          item->>'desc_item' as nome,
+          COUNT(*) as quantidade,
+          SUM(CAST(COALESCE(item->>'valor_liquido', '0') AS DECIMAL)) as valor
+        FROM vendas v, jsonb_array_elements(raw_data->'itens_venda') as item
+        WHERE v.data_venda >= $1
+          AND v.data_venda <= $2
+          AND v.confirmado = 'S'
+          AND item->>'desc_item' IS NOT NULL
+          AND item->>'desc_item' != ''
+        GROUP BY v.cod_estab, item->>'desc_item'
+        ORDER BY v.cod_estab, valor DESC
+      `;
+
+      const result = await db.query(query, [startDate, endDate]);
+
+      // Agrupa por estabelecimento, separando procedimentos de "Outros"
+      const porEstab = {};
+
+      result.rows.forEach(row => {
+        const nomeLower = (row.nome || '').toLowerCase();
+        const isExcluded = excludeTerms.some(term => nomeLower.includes(term));
+
+        const estabKey = ESTAB_NAMES[row.cod_estab] || `Estab ${row.cod_estab}`;
+
+        if (!porEstab[estabKey]) {
+          porEstab[estabKey] = {
+            cod_estab: row.cod_estab,
+            nome_estab: estabKey,
+            procedimentos: [],
+            outros: { nome: 'Outros (Planos/Vouchers)', quantidade: 0, valor: 0 },
+          };
+        }
+
+        if (isExcluded) {
+          // Agrupa itens excluídos em "Outros"
+          porEstab[estabKey].outros.quantidade += parseInt(row.quantidade) || 0;
+          porEstab[estabKey].outros.valor += parseFloat(row.valor) || 0;
+        } else {
+          porEstab[estabKey].procedimentos.push({
+            nome: row.nome,
+            quantidade: parseInt(row.quantidade) || 0,
+            valor: parseFloat(row.valor) || 0,
+          });
+        }
+      });
+
+      // Para cada estabelecimento, criar arrays byValor e byQuantidade
+      const resultado = {};
+
+      Object.entries(porEstab).forEach(([estabKey, data]) => {
+        let procs = data.procedimentos;
+
+        // Se o estabelecimento só tem "Outros", inclui na lista para aparecer no gráfico
+        // Considera valor > 0 OU quantidade > 0 (para casos onde valor é 0 mas há itens)
+        if (procs.length === 0 && (data.outros.valor > 0 || data.outros.quantidade > 0)) {
+          procs = [data.outros];
+        } else if (data.outros.valor > 0 || data.outros.quantidade > 0) {
+          // Adiciona "Outros" ao final se houver valor ou quantidade
+          procs = [...procs, data.outros];
+        }
+
+        resultado[estabKey] = {
+          cod_estab: data.cod_estab,
+          nome_estab: data.nome_estab,
+          byValor: procs
+            .sort((a, b) => b.valor - a.valor)
+            .slice(0, limitPerEstab)
+            .map(p => ({
+              ...p,
+              valorFormatado: p.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            })),
+          byQuantidade: [...procs]
+            .sort((a, b) => b.quantidade - a.quantidade)
+            .slice(0, limitPerEstab)
+            .map(p => ({
+              ...p,
+              valorFormatado: p.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }),
+            })),
+        };
+      });
+
+      logger.debug(`[DB Vendas] getProcedimentosPorEstabelecimentoFromVendas: ${Object.keys(resultado).length} estabelecimentos em ${Date.now() - timer}ms`);
+
+      return resultado;
+    } catch (error) {
+      logger.error('[DB Vendas] Erro em getProcedimentosPorEstabelecimentoFromVendas:', error.message);
+      return {};
+    }
+  }
+
+  /**
+   * Busca procedimentos mais vendidos diretamente da tabela de vendas (mais completo)
+   * Extrai itens_venda do JSON e agrega por nome do procedimento
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limit - Número máximo de resultados
+   * @param {string[]} excludeTerms - Termos a serem excluídos (ex: 'plano personalizado')
+   */
+  async getProcedimentosFromVendas(startDate, endDate, limit = 20, excludeTerms = []) {
+    const timer = Date.now();
+
+    try {
+      // Termos padrão para excluir (não são procedimentos reais)
+      const defaultExclude = ['plano personalizado', 'voucher', 'produtos', 'credito'];
+      const allExcludeTerms = [...new Set([...defaultExclude, ...excludeTerms.map(t => t.toLowerCase())])];
+
+      // Query que extrai itens_venda do JSON e agrega por nome
+      const query = `
+        SELECT
+          item->>'desc_item' as nome,
+          COUNT(*) as quantidade,
+          SUM(CAST(COALESCE(item->>'valor_liquido', '0') AS DECIMAL)) as valor
+        FROM vendas, jsonb_array_elements(raw_data->'itens_venda') as item
+        WHERE data_venda >= $1
+          AND data_venda <= $2
+          AND item->>'desc_item' IS NOT NULL
+          AND item->>'desc_item' != ''
+        GROUP BY item->>'desc_item'
+        ORDER BY valor DESC
+        LIMIT $3
+      `;
+
+      const result = await db.query(query, [startDate, endDate, limit * 2]); // Busca mais para compensar filtros
+
+      // Filtra termos excluídos e limita resultados
+      const filtered = result.rows
+        .filter(row => {
+          const nomeLower = row.nome.toLowerCase();
+          return !allExcludeTerms.some(term => nomeLower.includes(term));
+        })
+        .slice(0, limit);
+
+      logger.debug(`[DB] getProcedimentosFromVendas: ${filtered.length} procedimentos em ${Date.now() - timer}ms (de ${result.rows.length} total)`);
+
+      return filtered.map(row => ({
+        nome: row.nome,
+        quantidade: parseInt(row.quantidade) || 0,
+        valor: parseFloat(row.valor) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB] Erro em getProcedimentosFromVendas:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca profissionais com mais vendas do cache (carregamento instantâneo)
+   * Para períodos curtos (< 28 dias), busca direto da tabela vendas
+   * Para períodos maiores, usa o cache mensal
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limit - Número máximo de resultados
+   */
+  async getProfissionaisFromCache(startDate, endDate, limit = 20) {
+    const timer = Date.now();
+
+    try {
+      // Calcula dias no período
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+
+      // Para períodos curtos (menos de 28 dias), busca direto da tabela vendas
+      // Isso garante precisão quando o usuário filtra por "hoje", "última semana", etc.
+      if (diffDays < 28) {
+        return this.getProfissionaisFromVendas(startDate, endDate, limit);
+      }
+
+      // Para períodos maiores, usa o cache mensal (mais rápido)
+      const startMonth = startDate.substring(0, 7); // yyyy-MM
+      const endMonth = endDate.substring(0, 7);
+
+      // Query que agrega dados de múltiplos meses
+      const query = `
+        SELECT
+          nome,
+          SUM(vendas) as vendas,
+          SUM(valor) as valor
+        FROM profissionais_cache
+        WHERE ano_mes >= $1 AND ano_mes <= $2
+        GROUP BY nome
+        ORDER BY valor DESC
+        LIMIT $3
+      `;
+
+      const result = await db.query(query, [startMonth, endMonth, limit]);
+
+      logger.debug(`[DB Cache] getProfissionaisFromCache: ${result.rows.length} profissionais em ${Date.now() - timer}ms`);
+
+      return result.rows.map(row => ({
+        nome: row.nome,
+        vendas: parseInt(row.vendas) || 0,
+        valor: parseFloat(row.valor) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB Cache] Erro em getProfissionaisFromCache:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca profissionais DIRETO DA TABELA VENDAS
+   * Usa datas exatas para períodos curtos (hoje, última semana, etc.)
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {number} limit - Número máximo de resultados
+   */
+  async getProfissionaisFromVendas(startDate, endDate, limit = 20) {
+    const timer = Date.now();
+
+    try {
+      // Query que busca profissionais das vendas com datas exatas
+      const query = `
+        SELECT
+          COALESCE(nome_profissional, 'Não identificado') as nome,
+          COUNT(*) as vendas,
+          SUM(COALESCE(valor_venda, 0)) as valor
+        FROM vendas
+        WHERE data_venda >= $1
+          AND data_venda <= $2
+          AND confirmado = 'S'
+          AND nome_profissional IS NOT NULL
+          AND nome_profissional != ''
+        GROUP BY nome_profissional
+        ORDER BY valor DESC
+        LIMIT $3
+      `;
+
+      const result = await db.query(query, [startDate, endDate, limit]);
+
+      logger.debug(`[DB Vendas] getProfissionaisFromVendas: ${result.rows.length} profissionais em ${Date.now() - timer}ms`);
+
+      return result.rows.map(row => ({
+        nome: row.nome,
+        vendas: parseInt(row.vendas) || 0,
+        valor: parseFloat(row.valor) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB Vendas] Erro em getProfissionaisFromVendas:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Verifica se há dados de cache disponíveis para um período
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   */
+  async hasCacheData(startDate, endDate) {
+    try {
+      const startMonth = startDate.substring(0, 7);
+      const endMonth = endDate.substring(0, 7);
+
+      const result = await db.query(`
+        SELECT
+          (SELECT COUNT(*) FROM procedimentos_cache WHERE ano_mes >= $1 AND ano_mes <= $2) as proc_count,
+          (SELECT COUNT(*) FROM profissionais_cache WHERE ano_mes >= $1 AND ano_mes <= $2) as prof_count
+      `, [startMonth, endMonth]);
+
+      const row = result.rows[0] || {};
+      return {
+        hasProcedimentos: parseInt(row.proc_count) > 0,
+        hasProfissionais: parseInt(row.prof_count) > 0,
+        procedimentosCount: parseInt(row.proc_count) || 0,
+        profissionaisCount: parseInt(row.prof_count) || 0,
+      };
+    } catch (error) {
+      logger.error('[DB Cache] Erro em hasCacheData:', error.message);
+      return {
+        hasProcedimentos: false,
+        hasProfissionais: false,
+        procedimentosCount: 0,
+        profissionaisCount: 0,
+      };
+    }
+  }
+
+  // ==================== DEALS DO BANCO DE DADOS ====================
+
+  /**
+   * Busca deals WON do banco de dados (muito mais rápido que API)
+   * Retorna lista de lead_ids que viraram deal WON e métricas agregadas
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   */
+  async getDealsWonFromDB(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Busca deals WON no período
+      // WON deals have stage_id ending with ':WON' (e.g., 'C42:WON', 'C54:WON', 'C50:WON')
+      const result = await db.query(`
+        SELECT
+          d.bitrix_id,
+          d.contact_id,
+          d.opportunity,
+          d.bitrix_created_at,
+          d.custom_fields
+        FROM deals d
+        WHERE d.stage_id LIKE '%:WON'
+          AND d.bitrix_created_at >= $1
+          AND d.bitrix_created_at < ($2::date + interval '1 day')
+      `, [startDate, endDate]);
+
+      const deals = result.rows;
+
+      // Extrair lead_ids dos deals (vem do custom_field LEAD_ID ou contact_id)
+      const leadsComDealWon = [];
+      let wonDealsValue = 0;
+
+      deals.forEach(deal => {
+        // O lead_id pode vir do custom_fields ou ser o próprio bitrix_id convertido
+        const customFields = deal.custom_fields || {};
+        const leadId = customFields.LEAD_ID || String(deal.bitrix_id);
+
+        if (leadId && !leadsComDealWon.includes(leadId)) {
+          leadsComDealWon.push(leadId);
+        }
+
+        wonDealsValue += parseFloat(deal.opportunity) || 0;
+      });
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getDealsWonFromDB: ${deals.length} deals WON, ${leadsComDealWon.length} leads em ${duration}ms`);
+
+      return {
+        leadsComDealWon,
+        wonDealsCount: deals.length,
+        wonDealsValue,
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getDealsWonFromDB:', error.message);
+      return {
+        leadsComDealWon: [],
+        wonDealsCount: 0,
+        wonDealsValue: 0,
+      };
+    }
+  }
+
+  /**
+   * Busca deals LOST do banco de dados com motivos de desqualificação
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   */
+  async getDealsLostFromDB(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Busca deals LOST no período
+      // LOST deals have stage_id ending with ':LOSE' (e.g., 'C42:LOSE', 'C54:LOSE')
+      const result = await db.query(`
+        SELECT
+          d.bitrix_id,
+          d.custom_fields,
+          d.bitrix_created_at
+        FROM deals d
+        WHERE d.stage_id LIKE '%:LOSE'
+          AND d.bitrix_created_at >= $1
+          AND d.bitrix_created_at < ($2::date + interval '1 day')
+      `, [startDate, endDate]);
+
+      const deals = result.rows;
+
+      // Agrupar por motivo de desqualificação (campo UF_CRM_1695041103 no deal)
+      const byMotivoMap = {};
+
+      deals.forEach(deal => {
+        const customFields = deal.custom_fields || {};
+        // Campo de motivo de desqualificação em deals
+        const motivoId = customFields.UF_CRM_1695041103 || 'NAO_PREENCHIDO';
+
+        if (!byMotivoMap[motivoId]) {
+          byMotivoMap[motivoId] = {
+            id: motivoId,
+            name: this.getMotivoDesqualificacaoDealsName(motivoId),
+            count: 0,
+          };
+        }
+        byMotivoMap[motivoId].count++;
+      });
+
+      const byMotivoDesqualificacao = Object.values(byMotivoMap).sort((a, b) => b.count - a.count);
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getDealsLostFromDB: ${deals.length} deals LOST em ${duration}ms`);
+
+      return {
+        byMotivoDesqualificacao,
+        lostDealsCount: deals.length,
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getDealsLostFromDB:', error.message);
+      return {
+        byMotivoDesqualificacao: [],
+        lostDealsCount: 0,
+      };
+    }
+  }
+
+  /**
+   * Mapeia ID de motivo de desqualificação de DEALS para nome
+   * (pode ser diferente do mapa de leads)
+   */
+  getMotivoDesqualificacaoDealsName(motivoId) {
+    // Usa o mesmo mapeamento de leads por enquanto
+    // Pode ser customizado se os motivos de deals forem diferentes
+    return this.getMotivoDesqualificacaoName(motivoId);
+  }
+
+  /**
+   * Busca centros de custo (estabelecimentos) distintos do banco de dados
+   */
+  async getCentrosCustoFromDB() {
+    const timer = Date.now();
+    try {
+      const query = `
+        SELECT DISTINCT
+          centro_custo_id as id,
+          centro_custo as nome
+        FROM vendas
+        WHERE centro_custo IS NOT NULL
+          AND centro_custo != ''
+        ORDER BY centro_custo
+      `;
+      const result = await db.query(query);
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getCentrosCustoFromDB: ${result.rows.length} centros em ${duration}ms`);
+      return result.rows.map(row => ({
+        id: row.id,
+        nome: row.nome,
+      }));
+    } catch (error) {
+      logger.error('[DB] Erro em getCentrosCustoFromDB:', error.message);
+      return [];
     }
   }
 

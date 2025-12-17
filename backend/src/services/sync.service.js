@@ -408,6 +408,12 @@ class SyncService {
       // Sync vendas
       await this.syncVendas();
 
+      // Sync procedimentos e profissionais para o cache mensal (carregamento rápido)
+      await this.syncProcedimentosProfissionaisCache();
+
+      // Sync procedimentos diários para filtros de período curto (hoje, ontem, última semana)
+      await this.syncProcedimentosDiarios();
+
       timer({ status: 'success' });
     } catch (error) {
       logger.error('Erro no sync Belle:', error);
@@ -543,6 +549,205 @@ class SyncService {
     } catch (error) {
       await this.finishSyncLog(logId, 'error', {}, error.message);
       throw error;
+    }
+  }
+
+  // ==================== SYNC PROCEDIMENTOS E PROFISSIONAIS CACHE ====================
+
+  /**
+   * Sincroniza procedimentos e profissionais da Belle API para o cache local
+   * Usa os endpoints movimentacao_detalhado e venda_planos
+   * Dados são agregados mensalmente para consulta rápida
+   */
+  async syncProcedimentosProfissionaisCache() {
+    const timer = startTimer('Procedimentos/Profissionais Cache Sync');
+
+    try {
+      // Sincroniza o mês atual e o mês anterior
+      const hoje = new Date();
+      const mesesParaSync = [
+        format(hoje, 'yyyy-MM'),
+        format(new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1), 'yyyy-MM'),
+      ];
+
+      for (const anoMes of mesesParaSync) {
+        const [ano, mes] = anoMes.split('-').map(Number);
+        const dataInicio = format(new Date(ano, mes - 1, 1), 'yyyy-MM-dd');
+        const dataFim = format(new Date(ano, mes, 0), 'yyyy-MM-dd');
+
+        logger.info(`[Cache] Sincronizando procedimentos e profissionais de ${anoMes}...`);
+
+        // Busca procedimentos POR ESTABELECIMENTO e profissionais da Belle API
+        const [procedimentosPorEstab, profissionais] = await Promise.all([
+          belleService.getProcedimentosByEstabelecimento(dataInicio, dataFim, 100).catch(err => {
+            logger.warn(`[Cache] Erro ao buscar procedimentos por estabelecimento: ${err.message}`);
+            return [];
+          }),
+          belleService.getProfissionaisFromAPIs(dataInicio, dataFim, 50).catch(err => {
+            logger.warn(`[Cache] Erro ao buscar profissionais: ${err.message}`);
+            return [];
+          }),
+        ]);
+
+        // Salva procedimentos no cache (agora por estabelecimento)
+        if (procedimentosPorEstab.length > 0) {
+          await this.upsertProcedimentosCache(anoMes, procedimentosPorEstab);
+          logger.debug(`[Cache] ${procedimentosPorEstab.length} procedimentos por estabelecimento salvos para ${anoMes}`);
+        }
+
+        // Salva profissionais no cache
+        if (profissionais.length > 0) {
+          await this.upsertProfissionaisCache(anoMes, profissionais);
+          logger.debug(`[Cache] ${profissionais.length} profissionais salvos para ${anoMes}`);
+        }
+      }
+
+      // Atualiza status do cache
+      await db.query(`
+        UPDATE cache_sync_status
+        SET last_sync_at = NOW(), last_sync_status = 'success', updated_at = NOW()
+        WHERE cache_type IN ('procedimentos', 'profissionais')
+      `);
+
+      timer({ status: 'success' });
+      logger.info('[Cache] Sync de procedimentos e profissionais concluído');
+    } catch (error) {
+      logger.error('[Cache] Erro no sync de procedimentos/profissionais:', error.message);
+
+      // Atualiza status de erro
+      await db.query(`
+        UPDATE cache_sync_status
+        SET last_sync_at = NOW(), last_sync_status = 'error', error_message = $1, updated_at = NOW()
+        WHERE cache_type IN ('procedimentos', 'profissionais')
+      `, [error.message]).catch(() => {});
+
+      timer({ status: 'error' });
+      // Não lança erro para não interromper o sync principal
+    }
+  }
+
+  /**
+   * Upsert de procedimentos no cache (por estabelecimento)
+   * Procedimentos agora incluem cod_estab e nome_estab
+   */
+  async upsertProcedimentosCache(anoMes, procedimentos) {
+    for (const proc of procedimentos) {
+      try {
+        await db.query(`
+          INSERT INTO procedimentos_cache (ano_mes, nome, quantidade, valor, cod_estab, nome_estab, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, NOW())
+          ON CONFLICT (ano_mes, nome, cod_estab)
+          DO UPDATE SET
+            quantidade = EXCLUDED.quantidade,
+            valor = EXCLUDED.valor,
+            nome_estab = EXCLUDED.nome_estab,
+            updated_at = NOW()
+        `, [anoMes, proc.nome, proc.quantidade || 0, proc.valor || 0, proc.cod_estab || null, proc.nome_estab || null]);
+      } catch (error) {
+        logger.debug(`[Cache] Erro ao inserir procedimento ${proc.nome} (estab ${proc.cod_estab}): ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Upsert de profissionais no cache
+   */
+  async upsertProfissionaisCache(anoMes, profissionais) {
+    for (const prof of profissionais) {
+      try {
+        await db.query(`
+          INSERT INTO profissionais_cache (ano_mes, nome, vendas, valor, updated_at)
+          VALUES ($1, $2, $3, $4, NOW())
+          ON CONFLICT (ano_mes, nome)
+          DO UPDATE SET
+            vendas = EXCLUDED.vendas,
+            valor = EXCLUDED.valor,
+            updated_at = NOW()
+        `, [anoMes, prof.nome, prof.vendas || 0, prof.valor || 0]);
+      } catch (error) {
+        logger.debug(`[Cache] Erro ao inserir profissional ${prof.nome}: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Sincroniza procedimentos diários para filtros de período curto
+   * Busca dados dos últimos 14 dias e armazena por data específica
+   * Extrai serviços individuais dos planos (não apenas "Plano Personalizado")
+   */
+  async syncProcedimentosDiarios() {
+    const timer = startTimer('Procedimentos Diarios Sync');
+
+    try {
+      // Período: últimos 14 dias para garantir dados recentes
+      const hoje = new Date();
+      const dataInicio = format(subDays(hoje, 14), 'yyyy-MM-dd');
+      const dataFim = format(hoje, 'yyyy-MM-dd');
+
+      logger.info(`[Diarios] Sincronizando procedimentos de ${dataInicio} a ${dataFim}...`);
+
+      // Busca procedimentos com datas da Belle API
+      const procedimentos = await belleService.getProcedimentosDiariosPorEstab(dataInicio, dataFim)
+        .catch(err => {
+          logger.warn(`[Diarios] Erro ao buscar procedimentos diarios: ${err.message}`);
+          return [];
+        });
+
+      if (procedimentos.length === 0) {
+        logger.info('[Diarios] Nenhum procedimento diario encontrado');
+        timer({ status: 'success', count: 0 });
+        return;
+      }
+
+      // Limpa dados antigos do período para evitar duplicatas
+      await db.query(`
+        DELETE FROM procedimentos_diarios
+        WHERE data_ref >= $1 AND data_ref <= $2
+      `, [dataInicio, dataFim]).catch(err => {
+        logger.warn(`[Diarios] Erro ao limpar dados antigos: ${err.message}`);
+      });
+
+      // Insere novos dados
+      let inserted = 0;
+      for (const proc of procedimentos) {
+        try {
+          await db.query(`
+            INSERT INTO procedimentos_diarios (data_ref, cod_estab, nome_estab, nome_proc, quantidade, valor, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            ON CONFLICT (data_ref, cod_estab, nome_proc)
+            DO UPDATE SET
+              quantidade = EXCLUDED.quantidade,
+              valor = EXCLUDED.valor,
+              nome_estab = EXCLUDED.nome_estab,
+              updated_at = NOW()
+          `, [proc.data_ref, proc.cod_estab, proc.nome_estab, proc.nome_proc, proc.quantidade || 0, proc.valor || 0]);
+          inserted++;
+        } catch (error) {
+          logger.debug(`[Diarios] Erro ao inserir procedimento ${proc.nome_proc}: ${error.message}`);
+        }
+      }
+
+      // Atualiza status do cache
+      await db.query(`
+        UPDATE cache_sync_status
+        SET last_sync_at = NOW(), last_sync_status = 'success', records_synced = $1, updated_at = NOW()
+        WHERE cache_type = 'procedimentos_diarios'
+      `, [inserted]).catch(() => {});
+
+      timer({ status: 'success', count: inserted });
+      logger.info(`[Diarios] ${inserted} procedimentos diarios sincronizados`);
+    } catch (error) {
+      logger.error('[Diarios] Erro no sync de procedimentos diarios:', error.message);
+
+      // Atualiza status de erro
+      await db.query(`
+        UPDATE cache_sync_status
+        SET last_sync_at = NOW(), last_sync_status = 'error', error_message = $1, updated_at = NOW()
+        WHERE cache_type = 'procedimentos_diarios'
+      `, [error.message]).catch(() => {});
+
+      timer({ status: 'error' });
+      // Não lança erro para não interromper o sync principal
     }
   }
 

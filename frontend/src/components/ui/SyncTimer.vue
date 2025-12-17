@@ -17,6 +17,7 @@ const showDetails = ref(false)
 
 let statusInterval: ReturnType<typeof setInterval> | null = null
 let countdownInterval: ReturnType<typeof setInterval> | null = null
+let lastSyncInterval: ReturnType<typeof setInterval> | null = null
 
 async function fetchSyncStatus() {
   try {
@@ -62,6 +63,29 @@ function formatDateTime(dateStr: string | null): string {
   })
 }
 
+const lastSyncRelative = ref<string>('--')
+
+function updateLastSyncRelative() {
+  if (!syncStatus.value?.lastSyncAt) {
+    lastSyncRelative.value = '--'
+    return
+  }
+
+  const now = new Date()
+  const last = new Date(syncStatus.value.lastSyncAt)
+  const diffMs = now.getTime() - last.getTime()
+  const diffMin = Math.floor(diffMs / 60000)
+
+  if (diffMin < 1) {
+    lastSyncRelative.value = 'agora'
+  } else if (diffMin < 60) {
+    lastSyncRelative.value = `ha ${diffMin} min`
+  } else {
+    const diffHours = Math.floor(diffMin / 60)
+    lastSyncRelative.value = `ha ${diffHours}h`
+  }
+}
+
 function updateCountdown() {
   if (!syncStatus.value?.nextSyncAt) {
     countdown.value = '--:--'
@@ -97,6 +121,16 @@ watch(
   }
 )
 
+watch(
+  () => syncStatus.value?.lastSyncAt,
+  () => {
+    if (lastSyncInterval) clearInterval(lastSyncInterval)
+    updateLastSyncRelative()
+    // Update relative time every minute
+    lastSyncInterval = setInterval(updateLastSyncRelative, 60000)
+  }
+)
+
 onMounted(() => {
   fetchSyncStatus()
   statusInterval = setInterval(fetchSyncStatus, 30000)
@@ -105,6 +139,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (statusInterval) clearInterval(statusInterval)
   if (countdownInterval) clearInterval(countdownInterval)
+  if (lastSyncInterval) clearInterval(lastSyncInterval)
 })
 </script>
 
@@ -112,16 +147,16 @@ onUnmounted(() => {
   <div class="relative">
     <button
       @click="showDetails = !showDetails"
-      class="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[var(--color-bg-hover)] transition-colors"
+      class="flex items-center gap-3 px-3 py-1.5 rounded-lg hover:bg-[var(--color-bg-hover)] transition-colors"
       title="Status da sincronizacao"
     >
       <component :is="statusIcon.component" :size="14" :class="statusIcon.class" />
       <div class="flex flex-col items-start">
         <span class="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wide">
-          Prox. Atualizacao
+          Atualizado {{ lastSyncRelative }}
         </span>
-        <span class="text-sm font-mono text-[var(--color-text-primary)]">
-          {{ syncStatus?.isRunning ? 'Sincronizando...' : countdown }}
+        <span class="text-xs text-[var(--color-text-secondary)]">
+          {{ syncStatus?.isRunning ? 'Sincronizando...' : `Prox. em ${countdown}` }}
         </span>
       </div>
     </button>

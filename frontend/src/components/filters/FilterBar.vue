@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { onClickOutside } from '@vueuse/core'
+import { onClickOutside, useDebounceFn } from '@vueuse/core'
 import { ChevronDown, Check, X, Calendar } from 'lucide-vue-next'
 import { cn } from '@/utils/cn'
 import type { FilterState, FilterOptions } from '@/types'
@@ -16,6 +16,20 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'update:filters', filters: FilterState): void
 }>()
+
+// Debounce filter updates to avoid multiple API calls when changing filters rapidly
+const debouncedEmit = useDebounceFn((filters: FilterState) => {
+  emit('update:filters', filters)
+}, 300)
+
+// Immediate emit for dropdown selections (better UX)
+const emitFilters = (filters: FilterState, immediate = false) => {
+  if (immediate) {
+    emit('update:filters', filters)
+  } else {
+    debouncedEmit(filters)
+  }
+}
 
 const activeDropdown = ref<'estabelecimento' | 'profissional' | 'date' | null>(null)
 const dropdownRef = ref<HTMLDivElement | null>(null)
@@ -141,42 +155,49 @@ function handleEstabelecimentoToggle(id: string) {
   const newList = props.filters.centrosCusto.includes(id)
     ? props.filters.centrosCusto.filter(c => c !== id)
     : [...props.filters.centrosCusto, id]
-  emit('update:filters', { ...props.filters, centrosCusto: newList })
+  // Debounced - user may click multiple checkboxes rapidly
+  emitFilters({ ...props.filters, centrosCusto: newList })
 }
 
 function handleProfissionalChange(id: string) {
-  emit('update:filters', { ...props.filters, profissional: id || undefined })
+  // Immediate - closes dropdown
+  emitFilters({ ...props.filters, profissional: id || undefined }, true)
   activeDropdown.value = null
 }
 
 function handleDatePreset(preset: typeof datePresets[0]) {
   const { start, end } = preset.getValue()
-  emit('update:filters', { ...props.filters, dataInicio: start, dataFim: end })
+  // Immediate - closes dropdown
+  emitFilters({ ...props.filters, dataInicio: start, dataFim: end }, true)
   activeDropdown.value = null
 }
 
 function handleDateChange(field: 'dataInicio' | 'dataFim', value: string) {
-  emit('update:filters', { ...props.filters, [field]: value })
+  // Debounced - user may adjust date inputs
+  emitFilters({ ...props.filters, [field]: value })
 }
 
 function selectAllEstabelecimentos() {
-  emit('update:filters', { ...props.filters, centrosCusto: estabelecimentos.value.map(e => e.id) })
+  // Immediate - single click action
+  emitFilters({ ...props.filters, centrosCusto: estabelecimentos.value.map(e => e.id) }, true)
 }
 
 function clearEstabelecimentos() {
-  emit('update:filters', { ...props.filters, centrosCusto: [] })
+  // Immediate - single click action
+  emitFilters({ ...props.filters, centrosCusto: [] }, true)
 }
 
 function clearFilters() {
   const now = new Date()
   const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
   const end = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0]
-  emit('update:filters', {
+  // Immediate - single click action
+  emitFilters({
     dataInicio: start,
     dataFim: end,
     centrosCusto: [],
     profissional: undefined,
-  })
+  }, true)
 }
 
 function isDatePresetActive(preset: typeof datePresets[0]): boolean {

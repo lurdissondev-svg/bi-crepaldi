@@ -786,7 +786,7 @@ class BelleService {
         situacao: 'Confirmado', // Parâmetro obrigatório
         // Filtros de origem - especifica quais tipos de movimentação incluir
         origemServico: 1, // Serviços
-        origemPlano: 0, // Planos (0 pois temos endpoint separado)
+        origemPlano: 1, // Planos (inclui consultas e avaliações)
         origemProduto: 1, // Produtos
         origemCRE: 1, // Contas a receber
         origemOutrasVendas: 1, // Outras vendas
@@ -830,6 +830,21 @@ class BelleService {
     // Remove pontos de milhar e substitui vírgula por ponto decimal
     const cleaned = String(value).replace(/\./g, '').replace(',', '.');
     return parseFloat(cleaned) || 0;
+  }
+
+  /**
+   * Converte data do formato brasileiro (DD/MM/YYYY) para ISO (YYYY-MM-DD)
+   */
+  parseBrazilianDate(dateStr) {
+    if (!dateStr) return null;
+    // Se já está no formato ISO (YYYY-MM-DD), retorna como está
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
+    // Converte DD/MM/YYYY para YYYY-MM-DD
+    const match = String(dateStr).match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (match) {
+      return `${match[3]}-${match[2]}-${match[1]}`;
+    }
+    return null;
   }
 
   /**
@@ -1143,34 +1158,177 @@ class BelleService {
       });
     });
 
-    // Processar vendas de planos
+    // Processar vendas de planos - extrair serviços do array servicos
     planosResults.flat().forEach(plano => {
-      // Usar nomePlano como procedimento
-      const procNome = (plano.nomePlano || plano.descricao || '').trim();
-      if (!procNome) return;
+      const servicos = Array.isArray(plano.servicos) ? plano.servicos : [];
 
-      const valor = this.parseBrazilianNumber(plano.precoFinal || plano.preco || plano.valor || 0);
+      // Se não há serviços, ignora este plano
+      if (servicos.length === 0) return;
 
-      if (!procedimentosMap[procNome]) {
-        procedimentosMap[procNome] = {
-          nome: procNome,
-          quantidade: 0,
-          valor: 0,
-        };
-      }
-      procedimentosMap[procNome].quantidade++;
-      procedimentosMap[procNome].valor += valor;
+      // Cada serviço dentro do plano é um procedimento
+      servicos.forEach(servico => {
+        const procNome = (servico.nomeServico || '').trim();
+        if (!procNome) return;
+
+        // valorTotalServico é o valor do serviço com desconto aplicado
+        const valorServico = this.parseBrazilianNumber(servico.valorTotalServico || servico.valorServico || 0);
+        const qtdSessoes = parseInt(servico.qtdSessoes) || 1;
+
+        if (!procedimentosMap[procNome]) {
+          procedimentosMap[procNome] = {
+            nome: procNome,
+            quantidade: 0,
+            valor: 0,
+          };
+        }
+        // Quantidade = número de sessões vendidas
+        procedimentosMap[procNome].quantidade += qtdSessoes;
+        procedimentosMap[procNome].valor += valorServico;
+      });
     });
 
-    // Converter para array, ordenar por valor e limitar
+    // Termos a excluir (não são procedimentos reais)
+    const excludeTerms = ['plano personalizado', 'voucher', 'produtos', 'credito', 'cortesia'];
+
+    // Converter para array, filtrar termos excluídos, ordenar por valor e limitar
     const procedimentos = Object.values(procedimentosMap)
-      .filter(p => p.nome && p.valor > 0)
+      .filter(p => {
+        if (!p.nome || p.valor <= 0) return false;
+        const nomeLower = p.nome.toLowerCase();
+        return !excludeTerms.some(term => nomeLower.includes(term));
+      })
       .sort((a, b) => b.valor - a.valor)
       .slice(0, limit);
 
     logger.info(`[Belle] getProcedimentosFromAPIs: ${procedimentos.length} procedimentos de ${Object.keys(procedimentosMap).length} encontrados`);
 
     return procedimentos;
+  }
+
+  /**
+   * Busca procedimentos separados POR ESTABELECIMENTO
+   * Retorna um array flat com cada procedimento incluindo cod_estab e nome_estab
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @param {number} limitPerEstab - Limite de procedimentos por estabelecimento
+   * @returns {Array} Lista de procedimentos com cod_estab, nome_estab, nome, quantidade, valor
+   */
+  async getProcedimentosByEstabelecimento(dataInicio, dataFim, limitPerEstab = 50) {
+    // Map por estabelecimento: { codEstab: { procNome: { nome, quantidade, valor } } }
+    const procedimentosPorEstab = {};
+
+    // Divide período em chunks de 3 meses (limite da API)
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // Termos a excluir (não são procedimentos reais)
+    const excludeTerms = ['plano personalizado', 'voucher', 'produtos', 'credito', 'cortesia'];
+
+    // Para cada estabelecimento, buscar dados separadamente
+    for (const codEstab of this.estabelecimentos) {
+      procedimentosPorEstab[codEstab] = {};
+
+      const movimentacaoPromises = [];
+      const planosPromises = [];
+
+      for (const chunk of chunks) {
+        movimentacaoPromises.push(
+          this.getMovimentacaoDetalhado(codEstab, chunk.inicio, chunk.fim)
+            .catch(err => {
+              logger.warn(`[Belle] Erro movimentacao_detalhado estab ${codEstab}:`, err.message);
+              return [];
+            })
+        );
+
+        planosPromises.push(
+          this.getVendaPlanos(codEstab, chunk.inicio, chunk.fim)
+            .catch(err => {
+              logger.warn(`[Belle] Erro venda_planos estab ${codEstab}:`, err.message);
+              return [];
+            })
+        );
+      }
+
+      const [movimentacaoResults, planosResults] = await Promise.all([
+        Promise.all(movimentacaoPromises),
+        Promise.all(planosPromises),
+      ]);
+
+      // Processar movimentação detalhada
+      movimentacaoResults.flat().forEach(movimento => {
+        const detalhamentos = Array.isArray(movimento.detalhamento) ? movimento.detalhamento : [];
+
+        detalhamentos.forEach(item => {
+          const procNome = (item.desc_item || '').trim();
+          if (!procNome) return;
+
+          const valorItem = this.parseBrazilianNumber(item.valor_item || 0);
+
+          if (!procedimentosPorEstab[codEstab][procNome]) {
+            procedimentosPorEstab[codEstab][procNome] = {
+              nome: procNome,
+              quantidade: 0,
+              valor: 0,
+            };
+          }
+          procedimentosPorEstab[codEstab][procNome].quantidade++;
+          procedimentosPorEstab[codEstab][procNome].valor += valorItem;
+        });
+      });
+
+      // Processar vendas de planos
+      planosResults.flat().forEach(plano => {
+        const servicos = Array.isArray(plano.servicos) ? plano.servicos : [];
+        if (servicos.length === 0) return;
+
+        servicos.forEach(servico => {
+          const procNome = (servico.nomeServico || '').trim();
+          if (!procNome) return;
+
+          const valorServico = this.parseBrazilianNumber(servico.valorTotalServico || servico.valorServico || 0);
+          const qtdSessoes = parseInt(servico.qtdSessoes) || 1;
+
+          if (!procedimentosPorEstab[codEstab][procNome]) {
+            procedimentosPorEstab[codEstab][procNome] = {
+              nome: procNome,
+              quantidade: 0,
+              valor: 0,
+            };
+          }
+          procedimentosPorEstab[codEstab][procNome].quantidade += qtdSessoes;
+          procedimentosPorEstab[codEstab][procNome].valor += valorServico;
+        });
+      });
+    }
+
+    // Converter para array flat com cod_estab e nome_estab
+    const resultado = [];
+
+    for (const codEstab of this.estabelecimentos) {
+      const nomeEstab = this.estabelecimentosMap[codEstab] || `Estab ${codEstab}`;
+      const procs = Object.values(procedimentosPorEstab[codEstab])
+        .filter(p => {
+          if (!p.nome || p.valor <= 0) return false;
+          const nomeLower = p.nome.toLowerCase();
+          return !excludeTerms.some(term => nomeLower.includes(term));
+        })
+        .sort((a, b) => b.valor - a.valor)
+        .slice(0, limitPerEstab);
+
+      procs.forEach(proc => {
+        resultado.push({
+          cod_estab: codEstab,
+          nome_estab: nomeEstab,
+          nome: proc.nome,
+          quantidade: proc.quantidade,
+          valor: proc.valor,
+        });
+      });
+    }
+
+    logger.info(`[Belle] getProcedimentosByEstabelecimento: ${resultado.length} procedimentos de ${this.estabelecimentos.length} estabelecimentos`);
+
+    return resultado;
   }
 
   /**
@@ -1276,6 +1434,119 @@ class BelleService {
     logger.info(`[Belle] getProfissionaisFromAPIs: ${profissionais.length} profissionais de ${Object.keys(profissionaisMap).length} encontrados`);
 
     return profissionais;
+  }
+
+  /**
+   * Busca procedimentos DIÁRIOS por estabelecimento para sync
+   * Retorna array com data_ref, cod_estab, nome_proc, quantidade, valor
+   * Combina movimentacao_detalhado (com dt_lancamento) e venda_planos (com dtVenda)
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @returns {Array} Lista de procedimentos com data_ref, cod_estab, nome_estab, nome_proc, quantidade, valor
+   */
+  async getProcedimentosDiariosPorEstab(dataInicio, dataFim) {
+    // Map: `${data}_${codEstab}_${procNome}` -> { data_ref, cod_estab, nome_estab, nome_proc, quantidade, valor }
+    const procedimentosMap = {};
+
+    // Termos a excluir (não são procedimentos reais)
+    const excludeTerms = ['plano personalizado', 'voucher', 'produtos', 'credito', 'cortesia'];
+
+    // Para cada estabelecimento
+    for (const codEstab of this.estabelecimentos) {
+      const nomeEstab = this.estabelecimentosMap[codEstab] || `Estab ${codEstab}`;
+
+      // Buscar movimentação detalhada e planos
+      const [movimentacaoData, planosData] = await Promise.all([
+        this.getMovimentacaoDetalhado(codEstab, dataInicio, dataFim).catch(err => {
+          logger.warn(`[Belle] getProcedimentosDiarios - erro movimentacao estab ${codEstab}:`, err.message);
+          return [];
+        }),
+        this.getVendaPlanos(codEstab, dataInicio, dataFim).catch(err => {
+          logger.warn(`[Belle] getProcedimentosDiarios - erro planos estab ${codEstab}:`, err.message);
+          return [];
+        }),
+      ]);
+
+      // Processar movimentação detalhada
+      movimentacaoData.forEach(movimento => {
+        // A API retorna data_lancamento no formato ISO (YYYY-MM-DD)
+        const dataRef = movimento.data_lancamento || this.parseBrazilianDate(movimento.dt_lancamento);
+        if (!dataRef) return;
+
+        const detalhamentos = Array.isArray(movimento.detalhamento) ? movimento.detalhamento : [];
+
+        detalhamentos.forEach(item => {
+          // A API retorna 'descricao' no formato "408675870-Plano Personalizado" - extrair nome após o hífen
+          const rawDesc = item.descricao || item.desc_item || '';
+          // Remove o prefixo numérico se existir (ex: "408675870-Plano Personalizado" -> "Plano Personalizado")
+          const procNome = rawDesc.includes('-') ? rawDesc.split('-').slice(1).join('-').trim() : rawDesc.trim();
+          if (!procNome) return;
+
+          // Filtrar termos excluídos
+          const nomeLower = procNome.toLowerCase();
+          if (excludeTerms.some(term => nomeLower.includes(term))) return;
+
+          const valorItem = this.parseBrazilianNumber(item.valor_item || 0);
+          const key = `${dataRef}_${codEstab}_${procNome}`;
+
+          if (!procedimentosMap[key]) {
+            procedimentosMap[key] = {
+              data_ref: dataRef,
+              cod_estab: codEstab,
+              nome_estab: nomeEstab,
+              nome_proc: procNome,
+              quantidade: 0,
+              valor: 0,
+            };
+          }
+          procedimentosMap[key].quantidade++;
+          procedimentosMap[key].valor += valorItem;
+        });
+      });
+
+      // Processar vendas de planos - extrai serviços individuais
+      planosData.forEach(plano => {
+        const dataRef = this.parseBrazilianDate(plano.dtVenda || plano.dataVenda);
+        if (!dataRef) return;
+
+        const servicos = Array.isArray(plano.servicos) ? plano.servicos : [];
+        if (servicos.length === 0) return;
+
+        servicos.forEach(servico => {
+          const procNome = (servico.nomeServico || '').trim();
+          if (!procNome) return;
+
+          // Filtrar termos excluídos
+          const nomeLower = procNome.toLowerCase();
+          if (excludeTerms.some(term => nomeLower.includes(term))) return;
+
+          const valorServico = this.parseBrazilianNumber(servico.valorTotalServico || servico.valorServico || 0);
+          const qtdSessoes = parseInt(servico.qtdSessoes) || 1;
+
+          const key = `${dataRef}_${codEstab}_${procNome}`;
+
+          if (!procedimentosMap[key]) {
+            procedimentosMap[key] = {
+              data_ref: dataRef,
+              cod_estab: codEstab,
+              nome_estab: nomeEstab,
+              nome_proc: procNome,
+              quantidade: 0,
+              valor: 0,
+            };
+          }
+          procedimentosMap[key].quantidade += qtdSessoes;
+          procedimentosMap[key].valor += valorServico;
+        });
+      });
+    }
+
+    const resultado = Object.values(procedimentosMap).filter(p => p.valor > 0 || p.quantidade > 0);
+
+    logger.info(`[Belle] getProcedimentosDiariosPorEstab: ${resultado.length} registros de ${dataInicio} a ${dataFim}`);
+
+    return resultado;
   }
 
   async getMetasByPeriodo(dataInicio, dataFim) {

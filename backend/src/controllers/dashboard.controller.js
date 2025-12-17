@@ -278,16 +278,93 @@ export const dashboardController = {
 
       // Usar banco de dados como fonte primária (muito mais rápido!)
       let leadsAnalytics;
+      let dealsWonData = { leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0 };
+      let dealsLostData = { byMotivoDesqualificacao: [], lostDealsCount: 0 };
+      let procedimentosMaisVendidos = [];
+      let profissionaisMaisVendas = [];
       const timer = Date.now();
 
+      // Termos a serem filtrados dos procedimentos (não são procedimentos reais)
+      const filteredProcedimentos = ['plano personalizado'];
+
       try {
-        leadsAnalytics = await dashboardDBService.getLeadsAnalytics(startDate, endDate);
-        logger.info(`[Marketing] Dados do PostgreSQL em ${Date.now() - timer}ms - ${leadsAnalytics.total} leads`);
+        // Buscar leads do banco, deals WON da API, deals LOST, procedimentos, profissionais e motivos de desqualificação
+        const [dbLeads, wonDeals, lostDeals, apiProcedimentos, apiProfissionais, motivosDesqualificacao] = await Promise.all([
+          dashboardDBService.getLeadsAnalytics(startDate, endDate),
+          bitrix24Service.getDealsWonByLeads(startDate, endDate).catch(err => {
+            logger.warn('[Marketing] Erro ao buscar deals WON:', err.message);
+            return { leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0 };
+          }),
+          // Buscar deals LOST por motivo de desqualificação
+          bitrix24Service.getDealsLostByMotivoDesqualificacao(startDate, endDate).catch(err => {
+            logger.warn('[Marketing] Erro ao buscar deals LOST:', err.message);
+            return { byMotivoDesqualificacao: [], lostDealsCount: 0 };
+          }),
+          // Usar APIs Belle (movimentacao_detalhada + venda_planos) para procedimentos
+          belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(err => {
+            logger.warn('[Marketing] Erro ao buscar procedimentos da API Belle:', err.message);
+            // Fallback para banco de dados
+            return dashboardDBService.getProcedimentosMaisVendidos(startDate, endDate, 20).catch(() => []);
+          }),
+          // Usar APIs Belle (movimentacao_detalhada + venda_planos) para profissionais
+          belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(err => {
+            logger.warn('[Marketing] Erro ao buscar profissionais da API Belle:', err.message);
+            // Fallback para banco de dados
+            return dashboardDBService.getProfissionaisMaisVendas(startDate, endDate, 20).catch(() => []);
+          }),
+          // Buscar motivos de desqualificação pela data de MODIFICAÇÃO (quando o lead foi desqualificado)
+          dashboardDBService.getMotivosDesqualificacao(startDate, endDate).catch(err => {
+            logger.warn('[Marketing] Erro ao buscar motivos desqualificação:', err.message);
+            return { byMotivoDesqualificacao: [], totalDesqualificados: 0 };
+          }),
+        ]);
+        leadsAnalytics = dbLeads;
+        dealsWonData = wonDeals;
+        dealsLostData = lostDeals;
+        // Filtrar procedimentos que não são reais (ex: "Plano Personalizado")
+        procedimentosMaisVendidos = apiProcedimentos.filter(p =>
+          !filteredProcedimentos.some(term => p.nome.toLowerCase().includes(term))
+        );
+        profissionaisMaisVendas = apiProfissionais;
+        // Substituir byMotivoDesqualificacao pelo novo método que usa bitrix_modified_at
+        leadsAnalytics.byMotivoDesqualificacao = motivosDesqualificacao.byMotivoDesqualificacao;
+        logger.info(`[Marketing] Dados carregados em ${Date.now() - timer}ms - ${leadsAnalytics.total} leads, ${dealsWonData.wonDealsCount} deals WON, ${dealsLostData.lostDealsCount} deals LOST, ${procedimentosMaisVendidos.length} procedimentos, ${profissionaisMaisVendas.length} profissionais, ${motivosDesqualificacao.totalDesqualificados} desqualificados`);
       } catch (dbError) {
         // Fallback para API se o banco falhar
         logger.warn('[Marketing] Fallback para API Bitrix24:', dbError.message);
-        leadsAnalytics = await bitrix24Service.getLeadsAnalytics(startDate, endDate);
+        const [apiLeads, apiWonDeals, apiLostDeals, apiProcs, apiProfs] = await Promise.all([
+          bitrix24Service.getLeadsAnalytics(startDate, endDate),
+          bitrix24Service.getDealsWonByLeads(startDate, endDate).catch(() => ({ leadsComDealWon: [], wonDealsCount: 0, wonDealsValue: 0 })),
+          bitrix24Service.getDealsLostByMotivoDesqualificacao(startDate, endDate).catch(() => ({ byMotivoDesqualificacao: [], lostDealsCount: 0 })),
+          belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(() => []),
+          belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(() => []),
+        ]);
+        leadsAnalytics = apiLeads;
+        dealsWonData = apiWonDeals;
+        dealsLostData = apiLostDeals;
+        procedimentosMaisVendidos = apiProcs;
+        profissionaisMaisVendas = apiProfs;
         logger.info(`[Marketing] Dados da API em ${Date.now() - timer}ms`);
+      }
+
+      // Enriquecer byCampanhaBitrix com dados de conversão real (Deal WON)
+      const leadsWonSet = new Set(dealsWonData.leadsComDealWon);
+      if (leadsAnalytics.rawLeads && leadsAnalytics.byCampanhaBitrix) {
+        const convertidosPorCampanha = {};
+        leadsAnalytics.rawLeads.forEach(lead => {
+          const leadId = String(lead.bitrix_id || lead.id);
+          if (leadsWonSet.has(leadId)) {
+            const customFields = lead.custom_fields || {};
+            const campanhaId = customFields.UF_CRM_1729176132205 || 'NAO_PREENCHIDO';
+            convertidosPorCampanha[campanhaId] = (convertidosPorCampanha[campanhaId] || 0) + 1;
+          }
+        });
+
+        // Atualizar contagem de convertidos em cada campanha
+        leadsAnalytics.byCampanhaBitrix = leadsAnalytics.byCampanhaBitrix.map(campanha => ({
+          ...campanha,
+          convertidos: convertidosPorCampanha[campanha.id] || 0,
+        }));
       }
 
       // Horário de chegada dos leads
@@ -393,11 +470,23 @@ export const dashboardController = {
           byUtmSource: leadsAnalytics.byUtmSource,
           byUtmMedium: leadsAnalytics.byUtmMedium,
           byUtmCampaign: leadsAnalytics.byUtmCampaign,
+          byCampanhaBitrix: leadsAnalytics.byCampanhaBitrix,
+          campanhaMap: leadsAnalytics.campanhaMap,
           bySource: leadsAnalytics.bySource,
           statusDistribution: leadsAnalytics.statusDistribution,
+          byMotivoDesqualificacao: leadsAnalytics.byMotivoDesqualificacao,
           conversionRate: leadsAnalytics.conversionRate,
           heatmap: leadsAnalytics.heatmap,
           metrics: leadsAnalytics.metrics,
+          rawLeads: leadsAnalytics.rawLeads,
+          leadsComDealWon: dealsWonData.leadsComDealWon, // Lista de IDs de leads que viraram Deal WON
+          wonDealsCount: dealsWonData.wonDealsCount,
+          wonDealsValue: dealsWonData.wonDealsValue,
+          // Motivos de desqualificação de DEALS perdidos (complementa leads)
+          dealsLostByMotivoDesqualificacao: dealsLostData.byMotivoDesqualificacao,
+          lostDealsCount: dealsLostData.lostDealsCount,
+          procedimentosMaisVendidos, // Top procedimentos da API Belle
+          profissionaisMaisVendas, // Top profissionais da API Belle
         },
       });
     } catch (error) {

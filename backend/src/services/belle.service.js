@@ -1074,6 +1074,210 @@ class BelleService {
     return faturamentoPorCategoria;
   }
 
+  /**
+   * Busca procedimentos mais vendidos combinando:
+   * - movimentacao_detalhado (sem plano - serviços, produtos, etc)
+   * - venda_planos (planos aprovados)
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @param {number} limit - Limite de resultados
+   * @returns {Array} Lista de procedimentos com nome, quantidade e valor
+   */
+  async getProcedimentosFromAPIs(dataInicio, dataFim, limit = 20) {
+    const procedimentosMap = {};
+
+    // Divide período em chunks de 3 meses (limite da API)
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // Buscar de todos os estabelecimentos
+    const movimentacaoPromises = [];
+    const planosPromises = [];
+
+    for (const codEstab of this.estabelecimentos) {
+      for (const chunk of chunks) {
+        // Movimentação detalhada SEM planos (origemPlano: 0)
+        movimentacaoPromises.push(
+          this.getMovimentacaoDetalhado(codEstab, chunk.inicio, chunk.fim)
+            .catch(err => {
+              logger.warn(`[Belle] Erro movimentacao_detalhado estab ${codEstab}:`, err.message);
+              return [];
+            })
+        );
+
+        // Vendas de planos
+        planosPromises.push(
+          this.getVendaPlanos(codEstab, chunk.inicio, chunk.fim)
+            .catch(err => {
+              logger.warn(`[Belle] Erro venda_planos estab ${codEstab}:`, err.message);
+              return [];
+            })
+        );
+      }
+    }
+
+    const [movimentacaoResults, planosResults] = await Promise.all([
+      Promise.all(movimentacaoPromises),
+      Promise.all(planosPromises),
+    ]);
+
+    // Processar movimentação detalhada
+    movimentacaoResults.flat().forEach(movimento => {
+      const detalhamentos = Array.isArray(movimento.detalhamento) ? movimento.detalhamento : [];
+
+      detalhamentos.forEach(item => {
+        const procNome = (item.desc_item || '').trim();
+        if (!procNome) return;
+
+        const valorItem = this.parseBrazilianNumber(item.valor_item || 0);
+
+        if (!procedimentosMap[procNome]) {
+          procedimentosMap[procNome] = {
+            nome: procNome,
+            quantidade: 0,
+            valor: 0,
+          };
+        }
+        procedimentosMap[procNome].quantidade++;
+        procedimentosMap[procNome].valor += valorItem;
+      });
+    });
+
+    // Processar vendas de planos
+    planosResults.flat().forEach(plano => {
+      // Usar nomePlano como procedimento
+      const procNome = (plano.nomePlano || plano.descricao || '').trim();
+      if (!procNome) return;
+
+      const valor = this.parseBrazilianNumber(plano.precoFinal || plano.preco || plano.valor || 0);
+
+      if (!procedimentosMap[procNome]) {
+        procedimentosMap[procNome] = {
+          nome: procNome,
+          quantidade: 0,
+          valor: 0,
+        };
+      }
+      procedimentosMap[procNome].quantidade++;
+      procedimentosMap[procNome].valor += valor;
+    });
+
+    // Converter para array, ordenar por valor e limitar
+    const procedimentos = Object.values(procedimentosMap)
+      .filter(p => p.nome && p.valor > 0)
+      .sort((a, b) => b.valor - a.valor)
+      .slice(0, limit);
+
+    logger.info(`[Belle] getProcedimentosFromAPIs: ${procedimentos.length} procedimentos de ${Object.keys(procedimentosMap).length} encontrados`);
+
+    return procedimentos;
+  }
+
+  /**
+   * Busca profissionais com mais vendas combinando:
+   * - movimentacao_detalhado (campo vendedor no detalhamento)
+   * - venda_planos (campo indicacao)
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @param {number} limit - Limite de resultados
+   * @returns {Array} Lista de profissionais com nome, vendas e valor
+   */
+  async getProfissionaisFromAPIs(dataInicio, dataFim, limit = 20) {
+    const profissionaisMap = {};
+
+    // Divide período em chunks de 3 meses (limite da API)
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // Buscar de todos os estabelecimentos
+    const movimentacaoPromises = [];
+    const planosPromises = [];
+
+    for (const codEstab of this.estabelecimentos) {
+      for (const chunk of chunks) {
+        movimentacaoPromises.push(
+          this.getMovimentacaoDetalhado(codEstab, chunk.inicio, chunk.fim)
+            .catch(err => {
+              logger.warn(`[Belle] Erro movimentacao_detalhado estab ${codEstab}:`, err.message);
+              return [];
+            })
+        );
+
+        planosPromises.push(
+          this.getVendaPlanos(codEstab, chunk.inicio, chunk.fim)
+            .catch(err => {
+              logger.warn(`[Belle] Erro venda_planos estab ${codEstab}:`, err.message);
+              return [];
+            })
+        );
+      }
+    }
+
+    const [movimentacaoResults, planosResults] = await Promise.all([
+      Promise.all(movimentacaoPromises),
+      Promise.all(planosPromises),
+    ]);
+
+    // Processar movimentação detalhada - usa campo 'vendedor' no detalhamento
+    movimentacaoResults.flat().forEach(movimento => {
+      const valorMovimento = this.parseBrazilianNumber(movimento.valor_bruto || 0);
+      const detalhamentos = Array.isArray(movimento.detalhamento) ? movimento.detalhamento : [];
+
+      if (detalhamentos.length === 0) return;
+
+      // Calcular proporção de cada vendedor
+      const totalItens = detalhamentos.reduce((sum, item) =>
+        sum + this.parseBrazilianNumber(item.valor_item || 0), 0);
+
+      detalhamentos.forEach(item => {
+        const vendedor = (item.vendedor || '').trim();
+        if (!vendedor) return;
+
+        const valorItem = this.parseBrazilianNumber(item.valor_item || 0);
+        const proporcao = totalItens > 0 ? valorItem / totalItens : 1;
+        const valorProporcional = valorMovimento * proporcao;
+
+        if (!profissionaisMap[vendedor]) {
+          profissionaisMap[vendedor] = {
+            nome: vendedor,
+            vendas: 0,
+            valor: 0,
+          };
+        }
+        profissionaisMap[vendedor].vendas++;
+        profissionaisMap[vendedor].valor += valorProporcional;
+      });
+    });
+
+    // Processar vendas de planos - usa campo 'indicacao'
+    planosResults.flat().forEach(plano => {
+      const indicacao = (plano.indicacao || '').trim();
+      if (!indicacao) return;
+
+      const valor = this.parseBrazilianNumber(plano.precoFinal || plano.preco || plano.valor || 0);
+
+      if (!profissionaisMap[indicacao]) {
+        profissionaisMap[indicacao] = {
+          nome: indicacao,
+          vendas: 0,
+          valor: 0,
+        };
+      }
+      profissionaisMap[indicacao].vendas++;
+      profissionaisMap[indicacao].valor += valor;
+    });
+
+    // Converter para array, ordenar por valor e limitar
+    const profissionais = Object.values(profissionaisMap)
+      .filter(p => p.nome && p.valor > 0)
+      .sort((a, b) => b.valor - a.valor)
+      .slice(0, limit);
+
+    logger.info(`[Belle] getProfissionaisFromAPIs: ${profissionais.length} profissionais de ${Object.keys(profissionaisMap).length} encontrados`);
+
+    return profissionais;
+  }
+
   async getMetasByPeriodo(dataInicio, dataFim) {
     try {
       // A API Belle pode não ter endpoint de metas, então retornamos estrutura padrão

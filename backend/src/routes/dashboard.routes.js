@@ -28,6 +28,27 @@ router.get('/inactive-patients-dynamic', cacheMiddleware(cacheKey), dashboardCon
 router.get('/patients-overdue', cacheMiddleware(cacheKey), dashboardController.getPatientsOverdueForReturn);
 router.get('/churn-risk-summary', cacheMiddleware(cacheKey), dashboardController.getChurnRiskSummary);
 
+// Phase 3 & 4: Marketing KPIs e Customer LTV
+router.get('/conversion-time', cacheMiddleware(cacheKey), dashboardController.getConversionTime);
+router.get('/marketing-roas', cacheMiddleware(cacheKey), dashboardController.getMarketingROAS);
+router.get('/advanced-funnel', cacheMiddleware(cacheKey), dashboardController.getAdvancedFunnel);
+router.get('/campaign-attribution', cacheMiddleware(cacheKey), dashboardController.getCampaignAttribution);
+router.get('/customer-ltv', cacheMiddleware(cacheKey), dashboardController.getCustomerLTV);
+router.get('/voucher-analytics', cacheMiddleware(cacheKey), dashboardController.getVoucherAnalytics);
+router.get('/recurrence-metrics', cacheMiddleware(cacheKey), dashboardController.getRecurrenceMetrics);
+router.get('/return-customer-stats', cacheMiddleware(cacheKey), dashboardController.getReturnCustomerStats);
+router.get('/funnel-comparison', cacheMiddleware(cacheKey), dashboardController.getFunnelComparison);
+
+// Novos Indicadores da Apresentação (Gestão por Blocos Operacionais)
+router.get('/retention-rescue', cacheMiddleware(cacheKey), dashboardController.getRetentionRescue);
+router.get('/faturamento-medico', cacheMiddleware(cacheKey), dashboardController.getFaturamentoMedico);
+router.get('/faturamento-servico', cacheMiddleware(cacheKey), dashboardController.getFaturamentoServico);
+router.get('/ticket-medio-tipo', cacheMiddleware(cacheKey), dashboardController.getTicketMedioTipo);
+router.get('/conversao-canal', cacheMiddleware(cacheKey), dashboardController.getConversaoCanal);
+router.get('/no-show', cacheMiddleware(cacheKey), dashboardController.getNoShow);
+router.get('/conversao-propostas', cacheMiddleware(cacheKey), dashboardController.getConversaoPropostas);
+router.get('/cac-canal', cacheMiddleware(cacheKey), dashboardController.getCACCanal);
+
 // Opções de filtro
 router.get('/filtros', cacheMiddleware(cacheKey), dashboardController.getFilterOptions);
 

@@ -157,8 +157,8 @@ class SyncService {
       timer({ status: 'success' });
       logger.info('=== Sincronização completa finalizada ===');
 
-      // Atualiza status do sync
-      this.lastSyncAt = syncStartTime;
+      // Atualiza status do sync (usa o momento atual como lastSyncAt, não o início)
+      this.lastSyncAt = new Date();
       this.nextSyncAt = this.calculateNextSyncAt();
       this.lastSyncStatus = hasErrors ? 'partial' : 'success';
 
@@ -166,8 +166,8 @@ class SyncService {
       logger.error('Erro na sincronização completa:', error);
       timer({ status: 'error', error: error.message });
 
-      // Atualiza status mesmo em caso de erro
-      this.lastSyncAt = syncStartTime;
+      // Atualiza status mesmo em caso de erro (usa o momento atual)
+      this.lastSyncAt = new Date();
       this.nextSyncAt = this.calculateNextSyncAt();
       this.lastSyncStatus = 'error';
     } finally {
@@ -194,6 +194,11 @@ class SyncService {
         this.syncLeads(),
         this.syncDeals(),
       ]);
+
+      // Sync stage history (para métricas de conversão) - não bloqueia se falhar
+      this.syncLeadStageHistory().catch(err =>
+        logger.warn('[StageHistory] Erro no sync (não bloqueante):', err.message)
+      );
 
       timer({ status: 'success' });
     } catch (error) {
@@ -393,6 +398,163 @@ class SyncService {
     } catch (error) {
       await this.finishSyncLog(logId, 'error', {}, error.message);
       throw error;
+    }
+  }
+
+  // ==================== SYNC LEAD STAGE HISTORY ====================
+
+  /**
+   * Sincroniza histórico de mudanças de estágio dos leads
+   * Usa o endpoint crm.stagehistory.list do Bitrix24
+   * Calcula métricas de tempo de conversão por estágio
+   */
+  async syncLeadStageHistory() {
+    const logId = await this.startSyncLog('lead_status_history', 'full_sync');
+    const timer = startTimer('Lead Stage History Sync');
+
+    try {
+      // Busca histórico dos últimos 90 dias
+      const endDate = format(new Date(), 'yyyy-MM-dd');
+      const startDate = format(subDays(new Date(), 90), 'yyyy-MM-dd');
+
+      logger.info(`[StageHistory] Buscando histórico de ${startDate} a ${endDate}...`);
+
+      const stageHistory = await bitrix24Service.getStageHistory(1, startDate, endDate);
+
+      if (stageHistory.length === 0) {
+        logger.info('[StageHistory] Nenhum histórico encontrado');
+        await this.finishSyncLog(logId, 'success', { records_fetched: 0 });
+        timer({ status: 'success', count: 0 });
+        return;
+      }
+
+      // Busca nomes dos status para enriquecer os dados
+      const statuses = await bitrix24Service.getLeadStatuses();
+      const statusMap = {};
+      statuses.forEach(s => { statusMap[s.STATUS_ID] = s.NAME; });
+
+      // Agrupa transições por lead para calcular tempo em cada estágio
+      const transitionsByLead = {};
+      stageHistory.forEach(item => {
+        const leadId = String(item.OWNER_ID);
+        if (!transitionsByLead[leadId]) {
+          transitionsByLead[leadId] = [];
+        }
+        transitionsByLead[leadId].push(item);
+      });
+
+      let inserted = 0;
+      let updated = 0;
+
+      // Processa cada lead e suas transições
+      for (const [leadId, transitions] of Object.entries(transitionsByLead)) {
+        // Ordena por tempo
+        transitions.sort((a, b) => new Date(a.CREATED_TIME) - new Date(b.CREATED_TIME));
+
+        // Busca o ID interno do lead no nosso banco
+        const leadResult = await db.query(
+          'SELECT id FROM leads WHERE bitrix_id = $1',
+          [parseInt(leadId)]
+        );
+        const internalLeadId = leadResult.rows[0]?.id;
+
+        // Insere cada transição
+        for (let i = 0; i < transitions.length; i++) {
+          const current = transitions[i];
+          const previous = i > 0 ? transitions[i - 1] : null;
+
+          // Calcula dias no estágio anterior
+          let daysInPreviousStatus = 0;
+          if (previous) {
+            const prevTime = new Date(previous.CREATED_TIME);
+            const currTime = new Date(current.CREATED_TIME);
+            daysInPreviousStatus = Math.floor((currTime - prevTime) / (1000 * 60 * 60 * 24));
+          }
+
+          try {
+            const result = await db.query(`
+              INSERT INTO lead_status_history (
+                lead_id, bitrix_lead_id,
+                from_status_id, to_status_id,
+                from_status_name, to_status_name,
+                changed_at, days_in_previous_status
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              ON CONFLICT DO NOTHING
+              RETURNING id
+            `, [
+              internalLeadId,
+              parseInt(leadId),
+              previous?.STAGE_ID || null,
+              current.STAGE_ID,
+              previous ? (statusMap[previous.STAGE_ID] || previous.STAGE_ID) : null,
+              statusMap[current.STAGE_ID] || current.STAGE_ID,
+              current.CREATED_TIME,
+              daysInPreviousStatus,
+            ]);
+
+            if (result.rowCount > 0) {
+              inserted++;
+            }
+          } catch (err) {
+            // Ignora erros de duplicatas
+            if (!err.message.includes('duplicate')) {
+              logger.debug(`[StageHistory] Erro ao inserir transição: ${err.message}`);
+            }
+          }
+        }
+      }
+
+      // Atualiza campo conversion_days nos leads que foram convertidos
+      await this.updateLeadConversionDays();
+
+      await this.finishSyncLog(logId, 'success', {
+        records_fetched: stageHistory.length,
+        records_inserted: inserted,
+        date_from: startDate,
+        date_to: endDate,
+      });
+
+      timer({ status: 'success', count: inserted });
+      logger.info(`[StageHistory] ${inserted} transições sincronizadas de ${Object.keys(transitionsByLead).length} leads`);
+    } catch (error) {
+      await this.finishSyncLog(logId, 'error', {}, error.message);
+      timer({ status: 'error' });
+      throw error;
+    }
+  }
+
+  /**
+   * Atualiza o campo conversion_days nos leads baseado no histórico de status
+   */
+  async updateLeadConversionDays() {
+    try {
+      // Calcula dias de conversão para leads convertidos (status semântico = S)
+      await db.query(`
+        UPDATE leads l
+        SET conversion_days = COALESCE(
+          (
+            SELECT MAX(lsh.days_in_previous_status)
+            FROM lead_status_history lsh
+            WHERE lsh.bitrix_lead_id = l.bitrix_id
+              AND lsh.to_status_id IN (
+                SELECT bitrix_status_id FROM lead_statuses WHERE semantica = 'S'
+              )
+          ),
+          CASE
+            WHEN l.bitrix_closed_at IS NOT NULL AND l.bitrix_created_at IS NOT NULL
+            THEN EXTRACT(DAY FROM l.bitrix_closed_at - l.bitrix_created_at)::INTEGER
+            ELSE NULL
+          END
+        )
+        WHERE l.status_id IN (
+          SELECT bitrix_status_id FROM lead_statuses WHERE semantica = 'S'
+        )
+          AND l.conversion_days IS NULL
+      `);
+
+      logger.debug('[StageHistory] Dias de conversão atualizados nos leads');
+    } catch (error) {
+      logger.warn('[StageHistory] Erro ao atualizar conversion_days:', error.message);
     }
   }
 
@@ -651,6 +813,7 @@ class SyncService {
 
   /**
    * Upsert de profissionais no cache
+   * Nota: profissionais são agregados de todos os estabelecimentos, então usamos (ano_mes, nome)
    */
   async upsertProfissionaisCache(anoMes, profissionais) {
     for (const prof of profissionais) {

@@ -1596,6 +1596,312 @@ class BelleService {
   async getDashboardResumo(dataInicio, dataFim, estabelecimentosFiltro = []) {
     return this.getAnalyticsFaturamento(dataInicio, dataFim, estabelecimentosFiltro);
   }
+
+  // ==================== CUSTOMER LIFETIME VALUE & RETENTION ====================
+
+  /**
+   * Calcula métricas de Customer Lifetime Value (LTV) e retenção
+   * Baseado no histórico de vendas por cliente
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @param {number[]} estabelecimentosFiltro - Filtro de estabelecimentos
+   * @returns {Object} Métricas de LTV e retenção
+   */
+  async getCustomerLTVMetrics(dataInicio, dataFim, estabelecimentosFiltro = []) {
+    const estabs = estabelecimentosFiltro.length > 0
+      ? estabelecimentosFiltro
+      : this.estabelecimentos;
+
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // Buscar todas as vendas do período
+    const allPromises = [];
+    for (const codEstab of estabs) {
+      for (const chunk of chunks) {
+        allPromises.push(
+          this.getVendas(codEstab, chunk.inicio, chunk.fim)
+            .then(result => result.data || [])
+            .catch(() => [])
+        );
+      }
+    }
+
+    const vendasArrays = await Promise.all(allPromises);
+    const todasVendas = vendasArrays.flat();
+
+    // Agrupar vendas por cliente
+    const clientesMap = {};
+
+    todasVendas.forEach(venda => {
+      const clienteId = venda.cod_cliente;
+      if (!clienteId) return;
+
+      const valor = parseFloat(venda.valor_venda) || 0;
+      const dataVenda = venda.data_venda;
+
+      if (!clientesMap[clienteId]) {
+        clientesMap[clienteId] = {
+          id: clienteId,
+          totalGasto: 0,
+          numCompras: 0,
+          primeiraCompra: dataVenda,
+          ultimaCompra: dataVenda,
+          compras: [],
+        };
+      }
+
+      clientesMap[clienteId].totalGasto += valor;
+      clientesMap[clienteId].numCompras++;
+      clientesMap[clienteId].compras.push({ data: dataVenda, valor });
+
+      // Atualizar datas de primeira e última compra
+      if (dataVenda && (!clientesMap[clienteId].primeiraCompra || dataVenda < clientesMap[clienteId].primeiraCompra)) {
+        clientesMap[clienteId].primeiraCompra = dataVenda;
+      }
+      if (dataVenda && (!clientesMap[clienteId].ultimaCompra || dataVenda > clientesMap[clienteId].ultimaCompra)) {
+        clientesMap[clienteId].ultimaCompra = dataVenda;
+      }
+    });
+
+    const clientes = Object.values(clientesMap);
+
+    if (clientes.length === 0) {
+      return {
+        totalClientes: 0,
+        avgLTV: 0,
+        avgPurchases: 0,
+        avgTicket: 0,
+        retentionRate: 0,
+        churnRate: 0,
+        newCustomers: 0,
+        returningCustomers: 0,
+        topCustomers: [],
+        ltvDistribution: [],
+      };
+    }
+
+    // Calcular métricas
+    const totalGastoGeral = clientes.reduce((sum, c) => sum + c.totalGasto, 0);
+    const totalCompras = clientes.reduce((sum, c) => sum + c.numCompras, 0);
+
+    const avgLTV = totalGastoGeral / clientes.length;
+    const avgPurchases = totalCompras / clientes.length;
+    const avgTicket = totalCompras > 0 ? totalGastoGeral / totalCompras : 0;
+
+    // Clientes novos vs recorrentes (com mais de 1 compra no período)
+    const newCustomers = clientes.filter(c => c.numCompras === 1).length;
+    const returningCustomers = clientes.filter(c => c.numCompras > 1).length;
+
+    // Taxa de retenção (clientes com mais de 1 compra / total)
+    const retentionRate = clientes.length > 0
+      ? (returningCustomers / clientes.length) * 100
+      : 0;
+    const churnRate = 100 - retentionRate;
+
+    // Top 10 clientes por LTV
+    const topCustomers = clientes
+      .sort((a, b) => b.totalGasto - a.totalGasto)
+      .slice(0, 10)
+      .map(c => ({
+        id: c.id,
+        totalGasto: c.totalGasto,
+        numCompras: c.numCompras,
+        ticketMedio: c.numCompras > 0 ? c.totalGasto / c.numCompras : 0,
+      }));
+
+    // Distribuição de LTV (buckets)
+    const ltvBuckets = [
+      { label: 'R$ 0-500', min: 0, max: 500, count: 0 },
+      { label: 'R$ 500-1k', min: 500, max: 1000, count: 0 },
+      { label: 'R$ 1k-2.5k', min: 1000, max: 2500, count: 0 },
+      { label: 'R$ 2.5k-5k', min: 2500, max: 5000, count: 0 },
+      { label: 'R$ 5k-10k', min: 5000, max: 10000, count: 0 },
+      { label: 'R$ 10k+', min: 10000, max: Infinity, count: 0 },
+    ];
+
+    clientes.forEach(c => {
+      const bucket = ltvBuckets.find(b => c.totalGasto >= b.min && c.totalGasto < b.max);
+      if (bucket) bucket.count++;
+    });
+
+    const ltvDistribution = ltvBuckets.map(b => ({
+      label: b.label,
+      count: b.count,
+      percentage: clientes.length > 0 ? ((b.count / clientes.length) * 100).toFixed(1) : 0,
+    }));
+
+    logger.info(`[Belle] getCustomerLTVMetrics: ${clientes.length} clientes, avgLTV=R$ ${avgLTV.toFixed(2)}, retention=${retentionRate.toFixed(1)}%`);
+
+    return {
+      totalClientes: clientes.length,
+      avgLTV: Math.round(avgLTV * 100) / 100,
+      avgPurchases: Math.round(avgPurchases * 10) / 10,
+      avgTicket: Math.round(avgTicket * 100) / 100,
+      retentionRate: Math.round(retentionRate * 10) / 10,
+      churnRate: Math.round(churnRate * 10) / 10,
+      newCustomers,
+      returningCustomers,
+      topCustomers,
+      ltvDistribution,
+    };
+  }
+
+  /**
+   * Busca dados de vouchers do período
+   * Vouchers são vendas com desc_item contendo "voucher" ou "cartão presente"
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @returns {Object} Métricas de vouchers
+   */
+  async getVoucherAnalytics(dataInicio, dataFim) {
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // Buscar movimentação de todos os estabelecimentos
+    const promises = [];
+    for (const codEstab of this.estabelecimentos) {
+      for (const chunk of chunks) {
+        promises.push(
+          this.getMovimentacaoDetalhado(codEstab, chunk.inicio, chunk.fim)
+            .catch(() => [])
+        );
+      }
+    }
+
+    const results = await Promise.all(promises);
+    const todasMovimentacoes = results.flat();
+
+    // Filtrar vouchers e cartões presente
+    const voucherTerms = ['voucher', 'cartão presente', 'cartao presente', 'gift card', 'vale presente'];
+    let totalVendido = 0;
+    let quantidadeVendida = 0;
+    const vouchersPorMes = {};
+
+    todasMovimentacoes.forEach(mov => {
+      const detalhamentos = Array.isArray(mov.detalhamento) ? mov.detalhamento : [];
+
+      detalhamentos.forEach(item => {
+        const descricao = (item.desc_item || item.descricao || '').toLowerCase();
+        const isVoucher = voucherTerms.some(term => descricao.includes(term));
+
+        if (isVoucher) {
+          const valor = this.parseBrazilianNumber(item.valor_item || 0);
+          totalVendido += valor;
+          quantidadeVendida++;
+
+          // Agrupar por mês
+          const dataLancamento = mov.data_lancamento || this.parseBrazilianDate(mov.dt_lancamento);
+          if (dataLancamento) {
+            const mes = dataLancamento.substring(0, 7); // yyyy-MM
+            if (!vouchersPorMes[mes]) {
+              vouchersPorMes[mes] = { mes, quantidade: 0, valor: 0 };
+            }
+            vouchersPorMes[mes].quantidade++;
+            vouchersPorMes[mes].valor += valor;
+          }
+        }
+      });
+    });
+
+    const ticketMedio = quantidadeVendida > 0 ? totalVendido / quantidadeVendida : 0;
+
+    logger.info(`[Belle] getVoucherAnalytics: ${quantidadeVendida} vouchers vendidos, total=R$ ${totalVendido.toFixed(2)}`);
+
+    return {
+      totalVendido,
+      quantidadeVendida,
+      ticketMedio,
+      vouchersPorMes: Object.values(vouchersPorMes).sort((a, b) => a.mes.localeCompare(b.mes)),
+    };
+  }
+
+  /**
+   * Calcula taxa de recorrência de pacientes
+   * Identifica pacientes que retornam após um intervalo mínimo de dias
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @param {number} minIntervalDays - Intervalo mínimo para considerar recorrência (default: 30)
+   * @returns {Object} Métricas de recorrência
+   */
+  async getRecurrenceMetrics(dataInicio, dataFim, minIntervalDays = 30) {
+    const estabs = this.estabelecimentos;
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    // Buscar todas as vendas
+    const allPromises = [];
+    for (const codEstab of estabs) {
+      for (const chunk of chunks) {
+        allPromises.push(
+          this.getVendas(codEstab, chunk.inicio, chunk.fim)
+            .then(result => result.data || [])
+            .catch(() => [])
+        );
+      }
+    }
+
+    const vendasArrays = await Promise.all(allPromises);
+    const todasVendas = vendasArrays.flat();
+
+    // Agrupar por cliente e ordenar por data
+    const clientesMap = {};
+
+    todasVendas.forEach(venda => {
+      const clienteId = venda.cod_cliente;
+      if (!clienteId || !venda.data_venda) return;
+
+      if (!clientesMap[clienteId]) {
+        clientesMap[clienteId] = [];
+      }
+      clientesMap[clienteId].push(new Date(venda.data_venda));
+    });
+
+    // Calcular recorrência
+    let clientesRecorrentes = 0;
+    let totalIntervalosDias = 0;
+    let numIntervalos = 0;
+
+    Object.values(clientesMap).forEach(datas => {
+      if (datas.length < 2) return;
+
+      // Ordenar datas
+      datas.sort((a, b) => a - b);
+
+      // Verificar intervalos entre visitas
+      let temRecorrencia = false;
+      for (let i = 1; i < datas.length; i++) {
+        const intervalo = (datas[i] - datas[i - 1]) / (1000 * 60 * 60 * 24); // dias
+        if (intervalo >= minIntervalDays) {
+          temRecorrencia = true;
+          totalIntervalosDias += intervalo;
+          numIntervalos++;
+        }
+      }
+
+      if (temRecorrencia) {
+        clientesRecorrentes++;
+      }
+    });
+
+    const totalClientes = Object.keys(clientesMap).length;
+    const taxaRecorrencia = totalClientes > 0
+      ? (clientesRecorrentes / totalClientes) * 100
+      : 0;
+    const intervaloMedio = numIntervalos > 0
+      ? totalIntervalosDias / numIntervalos
+      : 0;
+
+    logger.info(`[Belle] getRecurrenceMetrics: ${clientesRecorrentes} de ${totalClientes} clientes recorrentes (${taxaRecorrencia.toFixed(1)}%)`);
+
+    return {
+      totalClientes,
+      clientesRecorrentes,
+      taxaRecorrencia: Math.round(taxaRecorrencia * 10) / 10,
+      intervaloMedioDias: Math.round(intervaloMedio),
+      minIntervalDays,
+    };
+  }
 }
 
 export default new BelleService();

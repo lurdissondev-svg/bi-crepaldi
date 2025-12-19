@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores/dashboard'
 import FilterBar from '@/components/filters/FilterBar.vue'
@@ -9,8 +9,12 @@ import PieChartCard from '@/components/charts/PieChartCard.vue'
 import DataTable from '@/components/dashboard/DataTable.vue'
 import RevalidatingIndicator from '@/components/ui/RevalidatingIndicator.vue'
 import PageSkeleton from '@/components/ui/PageSkeleton.vue'
-import { Users, UserCheck, UserX, Target, Clock, TrendingUp } from 'lucide-vue-next'
+import KPIStrip, { type KPIItem } from '@/components/charts/KPIStrip.vue'
+import SectionHeader from '@/components/ui/SectionHeader.vue'
+import { Users, UserCheck, UserX, Target, Clock, TrendingUp, DollarSign, Percent, Wallet } from 'lucide-vue-next'
 import { formatCurrency } from '@/utils/format'
+import { api } from '@/services/api'
+import type { CACCanal } from '@/types'
 
 const store = useDashboardStore()
 const { data, loadingStates, revalidatingStates, filters, filterOptions } = storeToRefs(store)
@@ -19,6 +23,132 @@ const isLoading = computed(() => loadingStates.value.marketing)
 const isRevalidating = computed(() => revalidatingStates.value.marketing)
 
 const marketingData = computed(() => data.value.marketing)
+
+// ROAS/CPL metrics
+interface ROASMetrics {
+  bySource: Array<{
+    source: string
+    leads: number
+    converted: number
+    revenue: number
+    spend: number
+    cpl: number
+    cpa: number
+    roas: number
+    conversionRate: number
+  }>
+  totals: {
+    totalLeads: number
+    convertedLeads: number
+    revenue: number
+    spend: number
+    overallCPL: number
+    overallCPA: number
+    overallROAS: number
+    overallConversionRate: number
+  }
+}
+
+const roasMetrics = ref<ROASMetrics | null>(null)
+const roasLoading = ref(false)
+
+async function fetchROASMetrics() {
+  roasLoading.value = true
+  try {
+    const response = await api.get<{ success: boolean; data: ROASMetrics }>('/dashboard/marketing-roas', {
+      params: {
+        data_inicio: filters.value.dataInicio,
+        data_fim: filters.value.dataFim,
+      },
+    })
+    if (response.data.success) {
+      roasMetrics.value = response.data.data
+    }
+  } catch (error) {
+    console.error('Erro ao buscar métricas ROAS:', error)
+  } finally {
+    roasLoading.value = false
+  }
+}
+
+// Funnel comparison data
+interface FunnelComparison {
+  current: {
+    funnel: Array<{ stage: string; count: number; percentage: number }>
+    categories: Record<string, { label: string; count: number; percentage: number }>
+    totalLeads: number
+    conversionRate: number
+  }
+  previous: {
+    funnel: Array<{ stage: string; count: number; percentage: number }>
+    categories: Record<string, { label: string; count: number; percentage: number }>
+    totalLeads: number
+    conversionRate: number
+  }
+  delta: {
+    totalLeads: number
+    totalLeadsPercent: number
+    converted: number
+    convertedPercent: number
+    conversionRate: number
+  }
+  periods: {
+    current: { start: string; end: string }
+    previous: { start: string; end: string }
+  }
+}
+
+const funnelComparison = ref<FunnelComparison | null>(null)
+const funnelLoading = ref(false)
+
+// CAC por Canal
+const cacCanal = ref<CACCanal[]>([])
+const cacLoading = ref(false)
+
+async function fetchCACCanal() {
+  cacLoading.value = true
+  try {
+    const response = await api.get<{ success: boolean; data: CACCanal[] }>('/dashboard/cac-canal', {
+      params: {
+        data_inicio: filters.value.dataInicio,
+        data_fim: filters.value.dataFim,
+      },
+    })
+    if (response.data.success) {
+      cacCanal.value = response.data.data
+    }
+  } catch (error) {
+    console.error('Erro ao buscar CAC por canal:', error)
+  } finally {
+    cacLoading.value = false
+  }
+}
+
+async function fetchFunnelComparison() {
+  funnelLoading.value = true
+  try {
+    const response = await api.get<{ success: boolean; data: FunnelComparison }>('/dashboard/funnel-comparison', {
+      params: {
+        data_inicio: filters.value.dataInicio,
+        data_fim: filters.value.dataFim,
+      },
+    })
+    if (response.data.success) {
+      funnelComparison.value = response.data.data
+    }
+  } catch (error) {
+    console.error('Erro ao buscar comparativo de funil:', error)
+  } finally {
+    funnelLoading.value = false
+  }
+}
+
+// Fetch data on mount and when filters change
+onMounted(() => {
+  fetchROASMetrics()
+  fetchFunnelComparison()
+  fetchCACCanal()
+})
 
 // Tab para análise UTM
 const utmTab = ref<'source' | 'medium' | 'campaign'>('source')
@@ -204,6 +334,97 @@ const totalLeads = computed(() => {
   return marketingData.value?.origemLead?.totalLeads?.total || 0
 })
 
+// KPI Items para o KPIStrip
+// Conforme spec: Primary KPIs são Total Leads, Taxa de Conversão e ROAS (ou CPL quando ROAS indisponível)
+const kpiItems = computed<KPIItem[]>(() => {
+  const metrics = marketingData.value?.metrics
+  const conversionRateNum = typeof marketingData.value?.conversionRate === 'number'
+    ? marketingData.value.conversionRate
+    : parseFloat(marketingData.value?.conversionRate || '0')
+
+  const roas = roasMetrics.value?.totals?.overallROAS || 0
+  const cpl = roasMetrics.value?.totals?.overallCPL || 0
+  const hasRoas = roas > 0
+
+  return [
+    // 3 Primary KPIs (aparecem primeiro)
+    {
+      id: 'total-leads',
+      label: 'Total Leads',
+      value: totalLeads.value,
+      format: 'number',
+      color: 'accent',
+      icon: Users,
+    },
+    {
+      id: 'conversion-rate',
+      label: 'Taxa de Conversão',
+      value: conversionRateNum,
+      format: 'percentage',
+      color: 'success',
+      icon: Target,
+    },
+    // ROAS ou CPL como terceiro KPI primário
+    hasRoas ? {
+      id: 'roas',
+      label: 'ROAS',
+      value: roas,
+      format: 'multiplier',
+      color: roas >= 1 ? 'success' : 'danger',
+      icon: TrendingUp,
+      tooltip: 'Retorno sobre investimento em anúncios',
+    } : {
+      id: 'cpl',
+      label: 'CPL',
+      value: cpl,
+      format: 'currency',
+      color: 'info',
+      icon: DollarSign,
+      tooltip: 'Custo por lead',
+    },
+    // KPIs secundários
+    {
+      id: 'cpl-secondary',
+      label: 'Custo por Lead',
+      value: cpl,
+      format: 'currency',
+      color: 'default',
+      icon: DollarSign,
+    },
+    {
+      id: 'em-atendimento',
+      label: 'Em Atendimento',
+      value: marketingData.value?.leadsEmAtendimento?.total || 0,
+      format: 'number',
+      color: 'warning',
+      icon: Clock,
+    },
+    {
+      id: 'desqualificados',
+      label: 'Desqualificados',
+      value: marketingData.value?.leadsDesqualificados?.total || 0,
+      format: 'number',
+      color: 'danger',
+      icon: UserX,
+    },
+    {
+      id: 'avg-conversion-days',
+      label: 'Tempo Médio Conversão',
+      value: metrics?.avgConversionDays || 0,
+      format: 'days',
+      color: 'default',
+    },
+    {
+      id: 'total-converted',
+      label: 'Total Convertidos',
+      value: metrics?.totalConverted || 0,
+      format: 'number',
+      color: 'success',
+      icon: UserCheck,
+    },
+  ]
+})
+
 // Motivos de desqualificação (do campo UF_CRM_1695041103 do Bitrix)
 const motivosDesqualificacao = computed(() => {
   if (!marketingData.value?.byMotivoDesqualificacao) return []
@@ -294,9 +515,60 @@ const procedimentosEstabColumns = [
   { key: 'quantidade', header: 'Qtd' },
 ]
 
+// Colunas e dados para tabela de performance por fonte
+const sourcePerformanceColumns = [
+  { key: 'source', header: 'Fonte' },
+  { key: 'leads', header: 'Leads', emphasis: true },
+  { key: 'converted', header: 'Convertidos' },
+  { key: 'conversionRateFormatted', header: 'Taxa Conv.' },
+  { key: 'cplFormatted', header: 'CPL' },
+  { key: 'roasFormatted', header: 'ROAS' },
+  { key: 'revenueFormatted', header: 'Receita' },
+]
+
+const sourcePerformanceData = computed(() => {
+  if (!roasMetrics.value?.bySource) return []
+  return roasMetrics.value.bySource.map(source => ({
+    ...source,
+    source: source.source || 'Direto',
+    conversionRateFormatted: `${source.conversionRate.toFixed(1)}%`,
+    cplFormatted: source.cpl > 0 ? formatCurrency(source.cpl) : '-',
+    roasFormatted: source.roas > 0 ? `${source.roas.toFixed(2)}x` : '-',
+    revenueFormatted: formatCurrency(source.revenue),
+  }))
+})
+
+// Dados para gráfico de CAC por Canal
+const cacChartData = computed(() => {
+  return cacCanal.value.map((item) => ({
+    name: item.canal,
+    value: item.cac,
+  }))
+})
+
+// Colunas da tabela de CAC
+const cacColumns = [
+  { key: 'canal', header: 'Canal' },
+  { key: 'investimentoFormatado', header: 'Investimento' },
+  { key: 'novosPacientes', header: 'Novos Pacientes' },
+  { key: 'cacFormatado', header: 'CAC' },
+]
+
+const cacTableData = computed(() => {
+  return cacCanal.value.map((item) => ({
+    ...item,
+    investimentoFormatado: formatCurrency(item.investimento),
+    cacFormatado: formatCurrency(item.cac),
+  }))
+})
+
 function handleFilterChange(newFilters: typeof filters.value) {
   store.setFilters(newFilters)
   store.refetch()
+  // Também atualizar métricas ROAS, funil e CAC com os novos filtros
+  fetchROASMetrics()
+  fetchFunnelComparison()
+  fetchCACCanal()
 }
 </script>
 
@@ -329,86 +601,12 @@ function handleFilterChange(newFilters: typeof filters.value) {
         </svg>
         <span class="text-sm font-medium">Atualizando dados...</span>
       </div>
-      <!-- KPIs -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-blue-500/20 rounded-lg">
-              <Users class="w-5 h-5 text-blue-500" />
-            </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Total Leads</span>
-          </div>
-          <p class="text-2xl font-bold text-[var(--color-text-primary)]">
-            {{ totalLeads.toLocaleString('pt-BR') }}
-          </p>
-        </div>
-
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-yellow-500/20 rounded-lg">
-              <Clock class="w-5 h-5 text-yellow-500" />
-            </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Em Atendimento</span>
-          </div>
-          <p class="text-2xl font-bold text-[var(--color-text-primary)]">
-            {{ (marketingData?.leadsEmAtendimento?.total || 0).toLocaleString('pt-BR') }}
-          </p>
-        </div>
-
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-red-500/20 rounded-lg">
-              <UserX class="w-5 h-5 text-red-500" />
-            </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Desqualificados</span>
-          </div>
-          <p class="text-2xl font-bold text-[var(--color-text-primary)]">
-            {{ (marketingData?.leadsDesqualificados?.total || 0).toLocaleString('pt-BR') }}
-          </p>
-        </div>
-
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-green-500/20 rounded-lg">
-              <Target class="w-5 h-5 text-green-500" />
-            </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Taxa de Conversão</span>
-          </div>
-          <p class="text-2xl font-bold text-green-500">
-            {{ typeof marketingData?.conversionRate === 'number'
-              ? marketingData.conversionRate.toFixed(1) + '%'
-              : (marketingData?.conversionRate || '0%') }}
-          </p>
-        </div>
-      </div>
-
-      <!-- Métricas extras -->
-      <div v-if="marketingData?.metrics" class="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div class="card p-4">
-          <p class="text-sm text-[var(--color-text-muted)]">Tempo Médio Conversão</p>
-          <p class="text-xl font-bold text-[var(--color-text-primary)] mt-1">
-            {{ marketingData.metrics.avgConversionDays?.toFixed(1) || 0 }} dias
-          </p>
-        </div>
-        <div class="card p-4">
-          <p class="text-sm text-[var(--color-text-muted)]">Tempo Médio em Progresso</p>
-          <p class="text-xl font-bold text-[var(--color-text-primary)] mt-1">
-            {{ marketingData.metrics.avgInProgressDays?.toFixed(1) || 0 }} dias
-          </p>
-        </div>
-        <div class="card p-4">
-          <p class="text-sm text-[var(--color-text-muted)]">Total Convertidos</p>
-          <p class="text-xl font-bold text-green-500 mt-1">
-            {{ (marketingData.metrics.totalConverted || 0).toLocaleString('pt-BR') }}
-          </p>
-        </div>
-        <div class="card p-4">
-          <p class="text-sm text-[var(--color-text-muted)]">Total Desqualificados</p>
-          <p class="text-xl font-bold text-red-500 mt-1">
-            {{ (marketingData.metrics.totalDisqualified || 0).toLocaleString('pt-BR') }}
-          </p>
-        </div>
-      </div>
+      <!-- KPIs com KPIStrip - 3 KPIs primários: Total Leads, Taxa de Conversão, ROAS/CPL -->
+      <KPIStrip
+        :items="kpiItems"
+        :primary-count="3"
+        layout="grid"
+      />
 
       <!-- Gráficos: Horário e Origem -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -429,6 +627,154 @@ function handleFilterChange(newFilters: typeof filters.value) {
           format-y-axis="number"
           :height="300"
         />
+      </div>
+
+      <!-- CAC por Canal de Aquisição -->
+      <div v-if="cacCanal.length > 0" class="card p-6">
+        <SectionHeader
+          title="CAC por Canal de Aquisição"
+          subtitle="Custo de Aquisição de Cliente por canal de marketing"
+          :icon="Wallet"
+        />
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+          <!-- Gráfico de barras -->
+          <BarChartCard
+            v-if="cacChartData.length > 0"
+            title="CAC por Canal"
+            :data="cacChartData"
+            color="#f59e0b"
+            format-y-axis="currency"
+            :height="300"
+          />
+
+          <!-- Tabela de CAC -->
+          <div class="bg-[var(--color-bg-tertiary)] rounded-xl p-4">
+            <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] mb-4 uppercase tracking-wide">
+              Detalhamento CAC
+            </h4>
+            <DataTable
+              :columns="cacColumns"
+              :data="cacTableData"
+              :max-rows="10"
+              density="compact"
+              empty-message="Nenhum dado de CAC disponível"
+            />
+          </div>
+        </div>
+
+        <!-- Cards de destaque -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+          <div
+            v-for="item in cacCanal.slice(0, 4)"
+            :key="item.canal"
+            class="p-4 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border-subtle)]"
+          >
+            <p class="text-xs text-[var(--color-text-muted)] mb-1">{{ item.canal }}</p>
+            <p class="text-xl font-bold text-[var(--color-text-primary)]">
+              {{ formatCurrency(item.cac) }}
+            </p>
+            <p class="text-xs text-[var(--color-text-secondary)] mt-1">
+              {{ item.novosPacientes }} novos pacientes
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Performance por Fonte - Comparativo ROAS/CPL -->
+      <div v-if="roasMetrics?.bySource?.length" class="card p-6">
+        <SectionHeader
+          title="Performance por Fonte de Tráfego"
+          subtitle="Comparativo de ROAS, CPL e taxa de conversão por fonte"
+        />
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+          <!-- ROAS por Fonte -->
+          <div class="bg-[var(--color-bg-tertiary)] rounded-xl p-4">
+            <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] mb-4 uppercase tracking-wide">
+              ROAS por Fonte
+            </h4>
+            <div class="space-y-3">
+              <div
+                v-for="source in roasMetrics.bySource.filter(s => s.roas > 0).slice(0, 5)"
+                :key="'roas-' + source.source"
+                class="flex items-center justify-between"
+              >
+                <span class="text-sm text-[var(--color-text-secondary)] truncate flex-1 mr-2">
+                  {{ source.source || 'Direto' }}
+                </span>
+                <span :class="[
+                  'text-sm font-semibold tabular-nums',
+                  source.roas >= 1 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'
+                ]">
+                  {{ source.roas.toFixed(2) }}x
+                </span>
+              </div>
+              <div v-if="!roasMetrics.bySource.some(s => s.roas > 0)" class="text-sm text-[var(--color-text-muted)]">
+                Sem dados de ROAS
+              </div>
+            </div>
+          </div>
+
+          <!-- CPL por Fonte -->
+          <div class="bg-[var(--color-bg-tertiary)] rounded-xl p-4">
+            <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] mb-4 uppercase tracking-wide">
+              CPL por Fonte
+            </h4>
+            <div class="space-y-3">
+              <div
+                v-for="source in roasMetrics.bySource.filter(s => s.cpl > 0).sort((a, b) => a.cpl - b.cpl).slice(0, 5)"
+                :key="'cpl-' + source.source"
+                class="flex items-center justify-between"
+              >
+                <span class="text-sm text-[var(--color-text-secondary)] truncate flex-1 mr-2">
+                  {{ source.source || 'Direto' }}
+                </span>
+                <span class="text-sm font-semibold tabular-nums text-[var(--color-info)]">
+                  {{ formatCurrency(source.cpl) }}
+                </span>
+              </div>
+              <div v-if="!roasMetrics.bySource.some(s => s.cpl > 0)" class="text-sm text-[var(--color-text-muted)]">
+                Sem dados de CPL
+              </div>
+            </div>
+          </div>
+
+          <!-- Conversão por Fonte -->
+          <div class="bg-[var(--color-bg-tertiary)] rounded-xl p-4">
+            <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] mb-4 uppercase tracking-wide">
+              Taxa de Conversão
+            </h4>
+            <div class="space-y-3">
+              <div
+                v-for="source in roasMetrics.bySource.filter(s => s.conversionRate > 0).sort((a, b) => b.conversionRate - a.conversionRate).slice(0, 5)"
+                :key="'conv-' + source.source"
+                class="flex items-center justify-between"
+              >
+                <span class="text-sm text-[var(--color-text-secondary)] truncate flex-1 mr-2">
+                  {{ source.source || 'Direto' }}
+                </span>
+                <span class="text-sm font-semibold tabular-nums text-[var(--color-success)]">
+                  {{ source.conversionRate.toFixed(1) }}%
+                </span>
+              </div>
+              <div v-if="!roasMetrics.bySource.some(s => s.conversionRate > 0)" class="text-sm text-[var(--color-text-muted)]">
+                Sem dados de conversão
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabela detalhada de performance por fonte -->
+        <div class="mt-6">
+          <DataTable
+            :columns="sourcePerformanceColumns"
+            :data="sourcePerformanceData"
+            :max-rows="10"
+            density="compact"
+            empty-message="Nenhum dado de performance disponível"
+          />
+        </div>
       </div>
 
       <!-- Análise por Fonte de Tráfego (UTM) -->
@@ -526,7 +872,113 @@ function handleFilterChange(newFilters: typeof filters.value) {
           :height="300"
         />
 
-        <div v-if="marketingData?.conversionFunnel?.length" class="card p-6">
+        <!-- Funil de Conversão com Comparativo -->
+        <div v-if="funnelComparison" class="card p-6">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="text-lg font-semibold text-[var(--color-text-primary)]">
+                Funil de Conversão
+              </h3>
+              <p class="text-sm text-[var(--color-text-muted)]">
+                Comparativo: período atual vs período anterior
+              </p>
+            </div>
+            <div class="flex items-center gap-4 text-xs">
+              <div class="flex items-center gap-2">
+                <div class="w-3 h-3 rounded bg-[var(--color-accent)]"></div>
+                <span class="text-[var(--color-text-muted)]">Atual</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="w-3 h-3 rounded bg-[var(--color-bg-active)] border border-[var(--color-border-secondary)]"></div>
+                <span class="text-[var(--color-text-muted)]">Anterior</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Resumo de deltas -->
+          <div class="grid grid-cols-3 gap-4 mb-6 p-4 bg-[var(--color-bg-tertiary)] rounded-lg">
+            <div class="text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">Total Leads</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ funnelComparison.current.totalLeads.toLocaleString('pt-BR') }}
+              </p>
+              <span :class="[
+                'text-xs font-medium',
+                funnelComparison.delta.totalLeadsPercent >= 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'
+              ]">
+                {{ funnelComparison.delta.totalLeadsPercent >= 0 ? '+' : '' }}{{ funnelComparison.delta.totalLeadsPercent.toFixed(1) }}%
+              </span>
+            </div>
+            <div class="text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">Convertidos</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ funnelComparison.current.categories.converted?.count?.toLocaleString('pt-BR') || 0 }}
+              </p>
+              <span :class="[
+                'text-xs font-medium',
+                funnelComparison.delta.convertedPercent >= 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'
+              ]">
+                {{ funnelComparison.delta.convertedPercent >= 0 ? '+' : '' }}{{ funnelComparison.delta.convertedPercent.toFixed(1) }}%
+              </span>
+            </div>
+            <div class="text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">Taxa Conversão</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ funnelComparison.current.conversionRate.toFixed(1) }}%
+              </p>
+              <span :class="[
+                'text-xs font-medium',
+                funnelComparison.delta.conversionRate >= 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'
+              ]">
+                {{ funnelComparison.delta.conversionRate >= 0 ? '+' : '' }}{{ funnelComparison.delta.conversionRate.toFixed(1) }}pp
+              </span>
+            </div>
+          </div>
+
+          <!-- Barras comparativas -->
+          <div class="space-y-4">
+            <div
+              v-for="(stage, index) in funnelComparison.current.funnel"
+              :key="index"
+              class="relative"
+            >
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-medium text-[var(--color-text-primary)]">{{ stage.stage }}</span>
+                <div class="flex items-center gap-3 text-xs">
+                  <span class="text-[var(--color-text-primary)] font-medium">
+                    {{ stage.count.toLocaleString('pt-BR') }}
+                  </span>
+                  <span class="text-[var(--color-text-muted)]">
+                    vs {{ funnelComparison.previous.funnel[index]?.count?.toLocaleString('pt-BR') || 0 }}
+                  </span>
+                </div>
+              </div>
+              <!-- Barra atual -->
+              <div class="w-full bg-[var(--color-bg-tertiary)] rounded-full h-4 mb-1 relative overflow-hidden">
+                <!-- Barra do período anterior (fundo) -->
+                <div
+                  class="absolute top-0 left-0 h-4 rounded-full bg-[var(--color-bg-active)] border border-[var(--color-border-secondary)]"
+                  :style="{ width: `${funnelComparison.previous.funnel[index]?.percentage || 0}%` }"
+                ></div>
+                <!-- Barra do período atual (foreground) -->
+                <div
+                  class="absolute top-0 left-0 h-4 rounded-full transition-all duration-500"
+                  :style="{
+                    width: `${stage.percentage}%`,
+                    backgroundColor: `hsl(${220 - index * 30}, 70%, 50%)`
+                  }"
+                ></div>
+              </div>
+              <div class="flex justify-between text-xs text-[var(--color-text-muted)]">
+                <span>{{ stage.percentage.toFixed(1) }}%</span>
+                <span>anterior: {{ (funnelComparison.previous.funnel[index]?.percentage || 0).toFixed(1) }}%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fallback: Funil simples se não tiver comparação -->
+        <div v-else-if="marketingData?.conversionFunnel?.length" class="card p-6">
           <h3 class="text-lg font-semibold text-[var(--color-text-primary)] mb-4">
             Funil de Conversão
           </h3>
@@ -551,9 +1003,6 @@ function handleFilterChange(newFilters: typeof filters.value) {
                   }"
                 ></div>
               </div>
-              <p v-if="stage.conversionFromPrevious !== undefined" class="text-xs text-[var(--color-text-muted)] mt-1">
-                Conversão do estágio anterior: {{ stage.conversionFromPrevious.toFixed(1) }}%
-              </p>
             </div>
           </div>
         </div>

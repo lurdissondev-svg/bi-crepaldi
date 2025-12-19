@@ -6,8 +6,9 @@ ALTER TABLE procedimentos_cache ADD COLUMN IF NOT EXISTS cod_estab INTEGER;
 ALTER TABLE procedimentos_cache ADD COLUMN IF NOT EXISTS nome_estab VARCHAR(100);
 
 -- Remove a constraint única antiga e cria uma nova incluindo estabelecimento
--- Primeiro remove a constraint antiga se existir
+-- Primeiro remove as constraints antigas se existirem
 ALTER TABLE procedimentos_cache DROP CONSTRAINT IF EXISTS procedimentos_cache_ano_mes_nome_key;
+ALTER TABLE procedimentos_cache DROP CONSTRAINT IF EXISTS procedimentos_cache_ano_mes_nome_estab_key;
 
 -- Cria nova constraint única incluindo estabelecimento
 -- Procedimentos são únicos por ano_mes + nome + cod_estab
@@ -22,10 +23,10 @@ CREATE INDEX IF NOT EXISTS idx_procedimentos_cache_ano_mes_estab ON procedimento
 ALTER TABLE profissionais_cache ADD COLUMN IF NOT EXISTS cod_estab INTEGER;
 ALTER TABLE profissionais_cache ADD COLUMN IF NOT EXISTS nome_estab VARCHAR(100);
 
--- Remove constraint antiga e cria nova
-ALTER TABLE profissionais_cache DROP CONSTRAINT IF EXISTS profissionais_cache_ano_mes_nome_key;
-ALTER TABLE profissionais_cache ADD CONSTRAINT profissionais_cache_ano_mes_nome_estab_key
-  UNIQUE (ano_mes, nome, cod_estab);
+-- Para profissionais, mantemos a constraint original (ano_mes, nome) porque
+-- os dados são agregados de todos os estabelecimentos
+-- Remove apenas a constraint com estab se existir (de execução anterior parcial)
+ALTER TABLE profissionais_cache DROP CONSTRAINT IF EXISTS profissionais_cache_ano_mes_nome_estab_key;
 
 -- Índice para busca por estabelecimento
 CREATE INDEX IF NOT EXISTS idx_profissionais_cache_estab ON profissionais_cache(cod_estab);

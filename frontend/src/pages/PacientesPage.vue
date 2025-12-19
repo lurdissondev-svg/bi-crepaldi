@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useDashboardStore } from '@/stores/dashboard'
 import FilterBar from '@/components/filters/FilterBar.vue'
 import TabNavigation from '@/components/navigation/TabNavigation.vue'
 import DataTable from '@/components/dashboard/DataTable.vue'
+import KPIStrip, { type KPIItem } from '@/components/charts/KPIStrip.vue'
+import SectionHeader from '@/components/ui/SectionHeader.vue'
 import RevalidatingIndicator from '@/components/ui/RevalidatingIndicator.vue'
 import PageSkeleton from '@/components/ui/PageSkeleton.vue'
-import { Users, DollarSign, Clock, AlertTriangle, TrendingUp, Target, Award } from 'lucide-vue-next'
+import { Users, DollarSign, Clock, AlertTriangle, TrendingUp, Target, Award, RefreshCcw, UserCheck } from 'lucide-vue-next'
 import { formatCurrency } from '@/utils/format'
 import api from '@/services/api'
+import type { RetentionRescueData } from '@/types'
 
 const store = useDashboardStore()
 const { data, loadingStates, revalidatingStates, filters, filterOptions } = storeToRefs(store)
@@ -22,23 +25,34 @@ const pacientesData = computed(() => data.value.pacientes)
 // Métricas avançadas: RFM e LTV
 const rfmSegments = ref<any[]>([])
 const topLtvCustomers = ref<any[]>([])
+const retentionRescue = ref<RetentionRescueData | null>(null)
 const loadingMetrics = ref(false)
 
-onMounted(async () => {
+async function loadMetrics() {
   loadingMetrics.value = true
   try {
-    const [rfmData, ltvData] = await Promise.all([
+    const [rfmData, ltvData, retRescueData] = await Promise.all([
       api.getRFMSegmentation(),
-      api.getTopCustomersByLTV(10)
+      api.getTopCustomersByLTV(10),
+      api.getRetentionRescue(filters.value),
     ])
     rfmSegments.value = rfmData || []
     topLtvCustomers.value = ltvData || []
+    retentionRescue.value = retRescueData
   } catch (err) {
     console.error('Erro ao carregar métricas:', err)
   } finally {
     loadingMetrics.value = false
   }
+}
+
+onMounted(() => {
+  loadMetrics()
 })
+
+watch(filters, () => {
+  loadMetrics()
+}, { deep: true })
 
 // Cores para segmentos RFM
 const segmentColors: Record<string, string> = {
@@ -77,6 +91,76 @@ const totalVendas = computed(() => {
 const potenciaisMais4 = computed(() => pacientesData.value?.potenciaisMais4Meses?.length || 0)
 const potenciaisMenos4 = computed(() => pacientesData.value?.potenciaisMenos4Meses?.length || 0)
 
+// KPI Items para o KPIStrip - Agora inclui Retenção e Resgate
+const kpiItems = computed<KPIItem[]>(() => {
+  const items: KPIItem[] = [
+    {
+      id: 'total-clientes',
+      label: 'Total Clientes',
+      value: pacientesData.value?.totalClientes || 0,
+      format: 'number',
+      color: 'accent',
+      icon: Users,
+    },
+    {
+      id: 'total-investido',
+      label: 'Total Investido',
+      value: totalInvestimento.value,
+      format: 'currency',
+      color: 'success',
+      icon: DollarSign,
+      subtitle: `${totalVendas.value.toLocaleString('pt-BR')} vendas`,
+    },
+  ]
+
+  // Adicionar Taxa de Retenção se disponível
+  if (retentionRescue.value) {
+    items.push(
+      {
+        id: 'taxa-retencao',
+        label: 'Taxa de Retenção (90d)',
+        value: retentionRescue.value.retencao.taxa,
+        format: 'percentage',
+        color: retentionRescue.value.retencao.taxa >= 60 ? 'success' : retentionRescue.value.retencao.taxa >= 40 ? 'warning' : 'danger',
+        icon: UserCheck,
+        subtitle: `${retentionRescue.value.retencao.retornaram90Dias} de ${retentionRescue.value.retencao.totalAtendidos} retornaram`,
+      },
+      {
+        id: 'taxa-resgate',
+        label: 'Taxa de Resgate',
+        value: retentionRescue.value.resgate.taxa,
+        format: 'percentage',
+        color: retentionRescue.value.resgate.taxa >= 20 ? 'success' : retentionRescue.value.resgate.taxa >= 10 ? 'warning' : 'danger',
+        icon: RefreshCcw,
+        subtitle: `${retentionRescue.value.resgate.reativados} reativados`,
+      }
+    )
+  }
+
+  items.push(
+    {
+      id: 'potenciais-menos-4',
+      label: 'Potenciais (-4 meses)',
+      value: potenciaisMenos4.value,
+      format: 'number',
+      color: 'warning',
+      icon: Clock,
+      subtitle: 'pacientes para reativar',
+    },
+    {
+      id: 'potenciais-mais-4',
+      label: 'Potenciais (+4 meses)',
+      value: potenciaisMais4.value,
+      format: 'number',
+      color: 'danger',
+      icon: AlertTriangle,
+      subtitle: 'pacientes inativos',
+    }
+  )
+
+  return items
+})
+
 function handleFilterChange(newFilters: typeof filters.value) {
   store.setFilters(newFilters)
   store.refetch()
@@ -101,63 +185,129 @@ function handleFilterChange(newFilters: typeof filters.value) {
     <PageSkeleton v-if="isLoading && !pacientesData" />
 
     <template v-else>
-      <!-- KPIs -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-blue-500/20 rounded-lg">
-              <Users class="w-5 h-5 text-blue-500" />
-            </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Total Clientes</span>
-          </div>
-          <p class="text-2xl font-bold text-[var(--color-text-primary)]">
-            {{ (pacientesData?.totalClientes || 0).toLocaleString('pt-BR') }}
-          </p>
-        </div>
+      <!-- KPIs com KPIStrip -->
+      <KPIStrip
+        :items="kpiItems"
+        :primary-count="3"
+        layout="grid"
+      />
 
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-green-500/20 rounded-lg">
-              <DollarSign class="w-5 h-5 text-green-500" />
-            </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Total Investido</span>
-          </div>
-          <p class="text-2xl font-bold text-[var(--color-text-primary)]">
-            {{ formatCurrency(totalInvestimento) }}
-          </p>
-          <p class="text-xs text-[var(--color-text-muted)] mt-1">
-            {{ totalVendas.toLocaleString('pt-BR') }} vendas
-          </p>
-        </div>
+      <!-- Taxa de Retenção e Resgate Detalhada -->
+      <div v-if="retentionRescue" class="card p-6">
+        <SectionHeader
+          title="Retenção e Resgate de Pacientes"
+          subtitle="Indicadores de fidelização e reativação"
+          :icon="UserCheck"
+        />
 
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-yellow-500/20 rounded-lg">
-              <Clock class="w-5 h-5 text-yellow-500" />
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+          <!-- Taxa de Retenção -->
+          <div class="p-6 bg-[var(--color-bg-tertiary)] rounded-xl">
+            <div class="flex items-center justify-between mb-4">
+              <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">
+                Taxa de Retenção (90 dias)
+              </h4>
+              <div class="relative w-20 h-20">
+                <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                  <circle
+                    cx="50" cy="50" r="40"
+                    fill="none"
+                    stroke="var(--color-bg-secondary)"
+                    stroke-width="8"
+                  />
+                  <circle
+                    cx="50" cy="50" r="40"
+                    fill="none"
+                    :stroke="retentionRescue.retencao.taxa >= 60 ? 'var(--color-success)' : retentionRescue.retencao.taxa >= 40 ? 'var(--color-warning)' : 'var(--color-danger)'"
+                    stroke-width="8"
+                    stroke-linecap="round"
+                    :stroke-dasharray="`${retentionRescue.retencao.taxa * 2.51} 251`"
+                  />
+                </svg>
+                <div class="absolute inset-0 flex items-center justify-center">
+                  <span class="text-lg font-bold text-[var(--color-text-primary)]">
+                    {{ retentionRescue.retencao.taxa.toFixed(0) }}%
+                  </span>
+                </div>
+              </div>
             </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Potenciais (-4 meses)</span>
-          </div>
-          <p class="text-2xl font-bold text-[var(--color-text-primary)]">
-            {{ potenciaisMenos4.toLocaleString('pt-BR') }}
-          </p>
-          <p class="text-xs text-[var(--color-text-muted)] mt-1">
-            pacientes para reativar
-          </p>
-        </div>
 
-        <div class="card p-5">
-          <div class="flex items-center gap-3 mb-3">
-            <div class="p-2 bg-red-500/20 rounded-lg">
-              <AlertTriangle class="w-5 h-5 text-red-500" />
+            <div class="space-y-3">
+              <div class="flex items-center justify-between p-3 bg-[var(--color-bg-secondary)] rounded-lg">
+                <span class="text-sm text-[var(--color-text-muted)]">Total Atendidos</span>
+                <span class="text-lg font-bold text-[var(--color-text-primary)]">
+                  {{ retentionRescue.retencao.totalAtendidos.toLocaleString('pt-BR') }}
+                </span>
+              </div>
+              <div class="flex items-center justify-between p-3 bg-[var(--color-bg-secondary)] rounded-lg">
+                <span class="text-sm text-[var(--color-text-muted)]">Retornaram em 90 dias</span>
+                <span class="text-lg font-bold text-[var(--color-success)]">
+                  {{ retentionRescue.retencao.retornaram90Dias.toLocaleString('pt-BR') }}
+                </span>
+              </div>
             </div>
-            <span class="text-sm text-[var(--color-text-muted)]">Potenciais (+4 meses)</span>
+
+            <p class="mt-4 text-xs text-[var(--color-text-muted)]">
+              Pacientes que voltaram dentro de 90 dias após a primeira visita no período
+            </p>
           </div>
-          <p class="text-2xl font-bold text-[var(--color-text-primary)]">
-            {{ potenciaisMais4.toLocaleString('pt-BR') }}
-          </p>
-          <p class="text-xs text-[var(--color-text-muted)] mt-1">
-            pacientes inativos
-          </p>
+
+          <!-- Taxa de Resgate -->
+          <div class="p-6 bg-[var(--color-bg-tertiary)] rounded-xl">
+            <div class="flex items-center justify-between mb-4">
+              <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">
+                Taxa de Resgate
+              </h4>
+              <div class="relative w-20 h-20">
+                <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                  <circle
+                    cx="50" cy="50" r="40"
+                    fill="none"
+                    stroke="var(--color-bg-secondary)"
+                    stroke-width="8"
+                  />
+                  <circle
+                    cx="50" cy="50" r="40"
+                    fill="none"
+                    :stroke="retentionRescue.resgate.taxa >= 20 ? 'var(--color-success)' : retentionRescue.resgate.taxa >= 10 ? 'var(--color-warning)' : 'var(--color-danger)'"
+                    stroke-width="8"
+                    stroke-linecap="round"
+                    :stroke-dasharray="`${retentionRescue.resgate.taxa * 2.51} 251`"
+                  />
+                </svg>
+                <div class="absolute inset-0 flex items-center justify-center">
+                  <span class="text-lg font-bold text-[var(--color-text-primary)]">
+                    {{ retentionRescue.resgate.taxa.toFixed(0) }}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="space-y-3">
+              <div class="flex items-center justify-between p-3 bg-[var(--color-bg-secondary)] rounded-lg">
+                <span class="text-sm text-[var(--color-text-muted)]">Total Contactados</span>
+                <span class="text-lg font-bold text-[var(--color-text-primary)]">
+                  {{ retentionRescue.resgate.totalContactados.toLocaleString('pt-BR') }}
+                </span>
+              </div>
+              <div class="flex items-center justify-between p-3 bg-[var(--color-bg-secondary)] rounded-lg">
+                <span class="text-sm text-[var(--color-text-muted)]">Reativados</span>
+                <span class="text-lg font-bold text-[var(--color-success)]">
+                  {{ retentionRescue.resgate.reativados.toLocaleString('pt-BR') }}
+                </span>
+              </div>
+              <div class="flex items-center justify-between p-3 bg-green-500/10 rounded-lg">
+                <span class="text-sm text-[var(--color-text-muted)]">Valor Resgatado</span>
+                <span class="text-lg font-bold text-green-500">
+                  {{ formatCurrency(retentionRescue.resgate.valorResgatado) }}
+                </span>
+              </div>
+            </div>
+
+            <p class="mt-4 text-xs text-[var(--color-text-muted)]">
+              Pacientes inativos contactados que retornaram
+            </p>
+          </div>
         </div>
       </div>
 

@@ -137,12 +137,12 @@ SELECT
     c.cod_cliente,
     c.nome,
     COUNT(v.id) AS total_vendas,
-    SUM(v.valor_total) AS total_gasto,
+    SUM(v.valor_liquido) AS total_gasto,
     MIN(v.data_venda) AS primeira_compra,
     MAX(v.data_venda) AS ultima_compra,
     EXTRACT(DAY FROM MAX(v.data_venda) - MIN(v.data_venda)) AS dias_como_cliente,
     CASE WHEN COUNT(v.id) > 1 THEN true ELSE false END AS is_returning,
-    ROUND(SUM(v.valor_total) / NULLIF(COUNT(v.id), 0), 2) AS ticket_medio,
+    ROUND(SUM(v.valor_liquido) / NULLIF(COUNT(v.id), 0), 2) AS ticket_medio,
     ROUND(COUNT(v.id)::DECIMAL / NULLIF(EXTRACT(MONTH FROM AGE(MAX(v.data_venda), MIN(v.data_venda))) + 1, 0), 2) AS freq_mensal
 FROM clientes c
 LEFT JOIN vendas v ON c.cod_cliente = v.cod_cliente

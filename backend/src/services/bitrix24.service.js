@@ -1030,6 +1030,243 @@ class Bitrix24Service {
   getProfissionalName(profId) {
     return this.profissionaisMap[String(profId)] || `Profissional ${profId}`;
   }
+
+  // ==================== STAGE HISTORY ====================
+
+  /**
+   * Busca histórico de mudanças de estágio de leads ou deals
+   * Usa o endpoint crm.stagehistory.list para obter transições de estágio
+   *
+   * @param {number} entityTypeId - 1 = Lead, 2 = Deal
+   * @param {string} startDate - Data início (formato YYYY-MM-DD)
+   * @param {string} endDate - Data fim (formato YYYY-MM-DD)
+   * @returns {Array} Lista de transições de estágio
+   */
+  async getStageHistory(entityTypeId = 1, startDate, endDate) {
+    const cacheKey = this.getCacheKey('stagehistory', { entityTypeId, startDate, endDate });
+
+    // Verifica cache primeiro
+    const cached = this.cache.get(cacheKey);
+    if (cached !== undefined) {
+      logger.debug(`[Bitrix Stage History Cache HIT] ${cacheKey}`);
+      return cached;
+    }
+
+    logger.info(`[Bitrix24 Service] Buscando histórico de estágios (entityTypeId=${entityTypeId}) de ${startDate} a ${endDate}`);
+
+    try {
+      const allItems = [];
+      let start = 0;
+
+      while (true) {
+        const response = await this.callMethod('crm.stagehistory.list', {
+          entityTypeId,
+          filter: {
+            '>=CREATED_TIME': startDate,
+            '<=CREATED_TIME': endDate,
+          },
+          order: { CREATED_TIME: 'ASC' },
+          start,
+        });
+
+        const items = response.result?.items || [];
+        allItems.push(...items);
+
+        if (!response.result?.next || items.length === 0) {
+          break;
+        }
+
+        start = response.result.next;
+        // Delay para evitar rate limiting
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      logger.info(`[Bitrix24 Service] Encontradas ${allItems.length} transições de estágio`);
+
+      // Cache por 5 minutos (histórico muda menos frequentemente)
+      this.cache.set(cacheKey, allItems, 300);
+      return allItems;
+    } catch (error) {
+      logger.error('[Bitrix24 Service] Erro ao buscar histórico de estágios:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Calcula métricas de tempo de conversão baseadas no histórico de estágios
+   * @param {string} startDate - Data início
+   * @param {string} endDate - Data fim
+   * @returns {Object} Métricas de conversão
+   */
+  async getConversionTimeMetrics(startDate, endDate) {
+    const stageHistory = await this.getStageHistory(1, startDate, endDate);
+    const leads = await this.getLeadsByDateRange(startDate, endDate);
+
+    if (stageHistory.length === 0) {
+      logger.warn('[Bitrix24 Service] Nenhum histórico de estágios encontrado, usando cálculo alternativo');
+      // Fallback: calcular baseado em DATE_CLOSED dos leads
+      return this.calculateConversionTimeFromLeads(leads);
+    }
+
+    // Agrupar transições por lead
+    const transitionsByLead = {};
+    stageHistory.forEach(item => {
+      const leadId = String(item.OWNER_ID);
+      if (!transitionsByLead[leadId]) {
+        transitionsByLead[leadId] = [];
+      }
+      transitionsByLead[leadId].push({
+        stageId: item.STAGE_ID,
+        semantics: item.STAGE_SEMANTIC_ID,
+        createdTime: new Date(item.CREATED_TIME),
+      });
+    });
+
+    // Calcular tempo médio para cada estágio
+    const stageTimings = {};
+    const conversionTimes = [];
+    const inProgressTimes = [];
+    const now = new Date();
+
+    Object.entries(transitionsByLead).forEach(([leadId, transitions]) => {
+      // Ordenar por tempo
+      transitions.sort((a, b) => a.createdTime - b.createdTime);
+
+      // Encontrar primeira transição (criação) e transição final
+      const firstTransition = transitions[0];
+      const lastTransition = transitions[transitions.length - 1];
+
+      // Se o lead foi convertido (sucesso)
+      if (lastTransition.semantics === 'S') {
+        const conversionDays = (lastTransition.createdTime - firstTransition.createdTime) / (1000 * 60 * 60 * 24);
+        if (conversionDays >= 0 && conversionDays < 365) {
+          conversionTimes.push(conversionDays);
+        }
+      }
+      // Se ainda está em progresso
+      else if (lastTransition.semantics === 'P') {
+        const inProgressDays = (now - firstTransition.createdTime) / (1000 * 60 * 60 * 24);
+        if (inProgressDays >= 0 && inProgressDays < 365) {
+          inProgressTimes.push(inProgressDays);
+        }
+      }
+
+      // Calcular tempo em cada estágio
+      for (let i = 0; i < transitions.length - 1; i++) {
+        const current = transitions[i];
+        const next = transitions[i + 1];
+        const timeInStage = (next.createdTime - current.createdTime) / (1000 * 60 * 60 * 24);
+
+        if (!stageTimings[current.stageId]) {
+          stageTimings[current.stageId] = { total: 0, count: 0 };
+        }
+        stageTimings[current.stageId].total += timeInStage;
+        stageTimings[current.stageId].count++;
+      }
+    });
+
+    // Calcular médias
+    const avgConversionDays = conversionTimes.length > 0
+      ? conversionTimes.reduce((a, b) => a + b, 0) / conversionTimes.length
+      : 0;
+
+    const avgInProgressDays = inProgressTimes.length > 0
+      ? inProgressTimes.reduce((a, b) => a + b, 0) / inProgressTimes.length
+      : 0;
+
+    // Calcular tempo médio por estágio
+    const avgTimeByStage = {};
+    Object.entries(stageTimings).forEach(([stageId, data]) => {
+      avgTimeByStage[stageId] = data.count > 0 ? data.total / data.count : 0;
+    });
+
+    return {
+      avgConversionDays: Math.round(avgConversionDays * 10) / 10,
+      avgInProgressDays: Math.round(avgInProgressDays * 10) / 10,
+      totalAnalyzed: Object.keys(transitionsByLead).length,
+      totalConverted: conversionTimes.length,
+      totalInProgress: inProgressTimes.length,
+      avgTimeByStage,
+      conversionTimeDistribution: this.calculateDistribution(conversionTimes),
+    };
+  }
+
+  /**
+   * Fallback: calcula tempo de conversão baseado em DATE_CLOSED dos leads
+   */
+  calculateConversionTimeFromLeads(leads) {
+    const conversionTimes = [];
+    const inProgressTimes = [];
+    const now = new Date();
+
+    leads.forEach(lead => {
+      if (!lead.DATE_CREATE) return;
+
+      const created = new Date(lead.DATE_CREATE);
+
+      // Se foi convertido
+      if ((lead.STATUS_ID === 'CONVERTED' || lead.status_semantica === 'success') && lead.DATE_CLOSED) {
+        const closed = new Date(lead.DATE_CLOSED);
+        const days = (closed - created) / (1000 * 60 * 60 * 24);
+        if (days >= 0 && days < 365) {
+          conversionTimes.push(days);
+        }
+      }
+      // Se ainda está em progresso
+      else if (lead.STATUS_ID !== 'JUNK' && lead.status_semantica !== 'failure') {
+        const days = (now - created) / (1000 * 60 * 60 * 24);
+        if (days >= 0 && days < 365) {
+          inProgressTimes.push(days);
+        }
+      }
+    });
+
+    const avgConversionDays = conversionTimes.length > 0
+      ? conversionTimes.reduce((a, b) => a + b, 0) / conversionTimes.length
+      : 0;
+
+    const avgInProgressDays = inProgressTimes.length > 0
+      ? inProgressTimes.reduce((a, b) => a + b, 0) / inProgressTimes.length
+      : 0;
+
+    return {
+      avgConversionDays: Math.round(avgConversionDays * 10) / 10,
+      avgInProgressDays: Math.round(avgInProgressDays * 10) / 10,
+      totalAnalyzed: leads.length,
+      totalConverted: conversionTimes.length,
+      totalInProgress: inProgressTimes.length,
+      avgTimeByStage: {},
+      conversionTimeDistribution: this.calculateDistribution(conversionTimes),
+    };
+  }
+
+  /**
+   * Calcula distribuição de tempos de conversão
+   */
+  calculateDistribution(times) {
+    if (times.length === 0) return [];
+
+    const buckets = [
+      { label: '0-1 dia', min: 0, max: 1, count: 0 },
+      { label: '2-3 dias', min: 2, max: 3, count: 0 },
+      { label: '4-7 dias', min: 4, max: 7, count: 0 },
+      { label: '8-14 dias', min: 8, max: 14, count: 0 },
+      { label: '15-30 dias', min: 15, max: 30, count: 0 },
+      { label: '31-60 dias', min: 31, max: 60, count: 0 },
+      { label: '60+ dias', min: 61, max: Infinity, count: 0 },
+    ];
+
+    times.forEach(t => {
+      const bucket = buckets.find(b => t >= b.min && t <= b.max);
+      if (bucket) bucket.count++;
+    });
+
+    return buckets.map(b => ({
+      label: b.label,
+      count: b.count,
+      percentage: times.length > 0 ? (b.count / times.length * 100).toFixed(1) : 0,
+    }));
+  }
 }
 
 export default new Bitrix24Service();

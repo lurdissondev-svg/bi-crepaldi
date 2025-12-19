@@ -117,8 +117,13 @@ function isDiaUtil(data, feriadosSet) {
  * @returns {number} Número de dias úteis no período
  */
 export function contarDiasUteis(inicio, fim) {
-  const dataInicio = typeof inicio === 'string' ? new Date(inicio + 'T12:00:00') : new Date(inicio);
-  const dataFim = typeof fim === 'string' ? new Date(fim + 'T12:00:00') : new Date(fim);
+  // Handle string dates - if already contains 'T', parse as-is; otherwise add T12:00:00
+  const parseDate = (d) => {
+    if (typeof d !== 'string') return new Date(d);
+    return d.includes('T') ? new Date(d) : new Date(d + 'T12:00:00');
+  };
+  const dataInicio = parseDate(inicio);
+  const dataFim = parseDate(fim);
 
   // Obter feriados dos anos envolvidos
   const anoInicio = dataInicio.getFullYear();
@@ -149,8 +154,13 @@ export function contarDiasUteis(inicio, fim) {
  * @returns {number} Número de dias úteis passados
  */
 export function contarDiasUteisPassados(inicio, fim) {
-  const dataInicio = typeof inicio === 'string' ? new Date(inicio + 'T12:00:00') : new Date(inicio);
-  const dataFim = typeof fim === 'string' ? new Date(fim + 'T12:00:00') : new Date(fim);
+  // Handle string dates - if already contains 'T', parse as-is; otherwise add T12:00:00
+  const parseDate = (d) => {
+    if (typeof d !== 'string') return new Date(d);
+    return d.includes('T') ? new Date(d) : new Date(d + 'T12:00:00');
+  };
+  const dataInicio = parseDate(inicio);
+  const dataFim = parseDate(fim);
   const hoje = new Date();
   hoje.setHours(12, 0, 0, 0);
 

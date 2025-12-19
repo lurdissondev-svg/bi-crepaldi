@@ -56,7 +56,7 @@ const showVariation = computed(() => variation.value !== null || props.trend)
     <div class="flex items-start justify-between">
       <div class="flex-1">
         <p class="text-sm text-[var(--color-text-muted)] mb-1">{{ title }}</p>
-        <p class="text-2xl font-bold text-[var(--color-text-primary)]">
+        <p class="text-2xl font-bold text-[var(--color-text-primary)] tabular-nums">
           {{ formatKPIValue(value, format) }}
         </p>
         <p v-if="subtitle" class="text-xs text-[var(--color-text-muted)] mt-1">{{ subtitle }}</p>

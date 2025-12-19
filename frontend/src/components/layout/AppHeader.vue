@@ -9,7 +9,7 @@ defineProps<{
 </script>
 
 <template>
-  <header class="h-16 bg-[var(--color-bg-elevated)] border-b border-[var(--color-border-primary)] flex items-center justify-between px-6 sticky top-0 z-30 backdrop-blur-sm bg-opacity-90">
+  <header class="h-14 bg-[var(--color-bg-elevated)] border-b border-[var(--color-border-primary)] flex items-center justify-between px-6 sticky top-0 z-30 backdrop-blur-sm bg-opacity-95 shadow-sm">
     <div class="flex items-center gap-4">
       <h1 class="text-xl font-semibold text-[var(--color-text-primary)]">{{ title }}</h1>
     </div>

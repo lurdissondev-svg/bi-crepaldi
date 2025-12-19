@@ -712,22 +712,24 @@ class DashboardDBService {
     try {
       let query = `
         SELECT
-          cod_estab,
-          SUM(CASE WHEN confirmado = 'S' THEN valor_bruto ELSE 0 END) as faturamento_total,
-          SUM(CASE WHEN confirmado = 'S' THEN valor_liquido ELSE 0 END) as faturamento_liquido,
-          COUNT(CASE WHEN confirmado = 'S' THEN 1 END) as quantidade_movimentos
-        FROM contas_receber
-        WHERE dt_lancamento >= $1 AND dt_lancamento <= $2
+          cr.cod_estab,
+          COALESCE(e.nome, 'Estabelecimento ' || cr.cod_estab) as nome_estabelecimento,
+          SUM(CASE WHEN cr.confirmado = 'S' THEN cr.valor_bruto ELSE 0 END) as faturamento_total,
+          SUM(CASE WHEN cr.confirmado = 'S' THEN cr.valor_liquido ELSE 0 END) as faturamento_liquido,
+          COUNT(CASE WHEN cr.confirmado = 'S' THEN 1 END) as quantidade_movimentos
+        FROM contas_receber cr
+        LEFT JOIN estabelecimentos e ON cr.cod_estab = e.cod_estab
+        WHERE cr.dt_lancamento >= $1 AND cr.dt_lancamento <= $2
       `;
 
       const params = [startDate, endDate];
 
       if (estabelecimentosFiltro.length > 0) {
-        query += ` AND cod_estab = ANY($3)`;
+        query += ` AND cr.cod_estab = ANY($3)`;
         params.push(estabelecimentosFiltro);
       }
 
-      query += ` GROUP BY cod_estab`;
+      query += ` GROUP BY cr.cod_estab, e.nome`;
 
       const result = await db.query(query, params);
 
@@ -741,6 +743,8 @@ class DashboardDBService {
         quantidadeMovimentos += parseInt(row.quantidade_movimentos) || 0;
         faturamentoPorEstabelecimento[row.cod_estab] = {
           codestab: row.cod_estab,
+          estabelecimento: row.nome_estabelecimento,
+          nome: row.nome_estabelecimento,
           valor,
           quantidade: parseInt(row.quantidade_movimentos) || 0,
         };
@@ -835,6 +839,42 @@ class DashboardDBService {
       return result.rows;
     } catch (error) {
       logger.error('[DB] Erro em getFaturamentoDiarioFromDB:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca faturamento mensal agregado do banco (histórico por mês)
+   */
+  async getFaturamentoMensalFromDB(startDate, endDate, estabelecimentosFiltro = []) {
+    try {
+      let query = `
+        SELECT
+          TO_CHAR(dt_lancamento, 'YYYY-MM') as mes,
+          TO_CHAR(dt_lancamento, 'Mon/YY') as mes_formatado,
+          SUM(CASE WHEN confirmado = 'S' THEN valor_bruto ELSE 0 END) as valor
+        FROM contas_receber
+        WHERE dt_lancamento >= $1 AND dt_lancamento <= $2
+      `;
+
+      const params = [startDate, endDate];
+
+      if (estabelecimentosFiltro.length > 0) {
+        query += ` AND cod_estab = ANY($3)`;
+        params.push(estabelecimentosFiltro);
+      }
+
+      query += ` GROUP BY TO_CHAR(dt_lancamento, 'YYYY-MM'), TO_CHAR(dt_lancamento, 'Mon/YY')
+                 ORDER BY mes`;
+
+      const result = await db.query(query, params);
+
+      return result.rows.map(row => ({
+        mes: row.mes_formatado,
+        valor: parseFloat(row.valor) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB] Erro em getFaturamentoMensalFromDB:', error.message);
       return [];
     }
   }
@@ -1974,6 +2014,563 @@ class DashboardDBService {
     }
   }
 
+  // ==================== CONVERSION TIME METRICS ====================
+
+  /**
+   * Calcula métricas de tempo de conversão do banco de dados
+   * Usa a tabela lead_status_history para calcular tempo entre estágios
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @returns {Object} Métricas de conversão
+   */
+  async getConversionTimeMetrics(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Primeiro tenta usar a tabela lead_status_history
+      const historyResult = await db.query(`
+        WITH converted_leads AS (
+          -- Leads que foram convertidos (status semântico S) no período
+          SELECT DISTINCT
+            l.id,
+            l.bitrix_id,
+            l.bitrix_created_at,
+            l.bitrix_closed_at,
+            l.conversion_days
+          FROM leads l
+          JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+          WHERE ls.semantica = 'S'
+            AND l.bitrix_created_at >= $1
+            AND l.bitrix_created_at < ($2::date + interval '1 day')
+        ),
+        in_progress_leads AS (
+          -- Leads ainda em progresso (status semântico P)
+          SELECT DISTINCT
+            l.id,
+            l.bitrix_id,
+            l.bitrix_created_at
+          FROM leads l
+          JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+          WHERE ls.semantica = 'P'
+            AND l.bitrix_created_at >= $1
+            AND l.bitrix_created_at < ($2::date + interval '1 day')
+        ),
+        conversion_times AS (
+          SELECT
+            COALESCE(
+              conversion_days,
+              CASE
+                WHEN bitrix_closed_at IS NOT NULL
+                THEN EXTRACT(DAY FROM bitrix_closed_at - bitrix_created_at)::INTEGER
+                ELSE NULL
+              END
+            ) AS days_to_convert
+          FROM converted_leads
+          WHERE COALESCE(
+            conversion_days,
+            CASE
+              WHEN bitrix_closed_at IS NOT NULL
+              THEN EXTRACT(DAY FROM bitrix_closed_at - bitrix_created_at)::INTEGER
+              ELSE NULL
+            END
+          ) BETWEEN 0 AND 365
+        ),
+        progress_times AS (
+          SELECT
+            EXTRACT(DAY FROM NOW() - bitrix_created_at)::INTEGER AS days_in_progress
+          FROM in_progress_leads
+          WHERE EXTRACT(DAY FROM NOW() - bitrix_created_at)::INTEGER BETWEEN 0 AND 365
+        )
+        SELECT
+          (SELECT ROUND(AVG(days_to_convert), 1) FROM conversion_times) AS avg_conversion_days,
+          (SELECT ROUND(AVG(days_in_progress), 1) FROM progress_times) AS avg_in_progress_days,
+          (SELECT COUNT(*) FROM converted_leads) AS total_converted,
+          (SELECT COUNT(*) FROM in_progress_leads) AS total_in_progress
+      `, [startDate, endDate]);
+
+      const row = historyResult.rows[0] || {};
+
+      // Calcular distribuição de tempos de conversão
+      const distributionResult = await db.query(`
+        WITH conversion_times AS (
+          SELECT
+            COALESCE(
+              l.conversion_days,
+              CASE
+                WHEN l.bitrix_closed_at IS NOT NULL
+                THEN EXTRACT(DAY FROM l.bitrix_closed_at - l.bitrix_created_at)::INTEGER
+                ELSE NULL
+              END
+            ) AS days
+          FROM leads l
+          JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+          WHERE ls.semantica = 'S'
+            AND l.bitrix_created_at >= $1
+            AND l.bitrix_created_at < ($2::date + interval '1 day')
+        )
+        SELECT
+          CASE
+            WHEN days <= 1 THEN '0-1 dia'
+            WHEN days <= 3 THEN '2-3 dias'
+            WHEN days <= 7 THEN '4-7 dias'
+            WHEN days <= 14 THEN '8-14 dias'
+            WHEN days <= 30 THEN '15-30 dias'
+            WHEN days <= 60 THEN '31-60 dias'
+            ELSE '60+ dias'
+          END AS label,
+          COUNT(*) AS count
+        FROM conversion_times
+        WHERE days IS NOT NULL AND days >= 0 AND days <= 365
+        GROUP BY label
+        ORDER BY
+          CASE label
+            WHEN '0-1 dia' THEN 1
+            WHEN '2-3 dias' THEN 2
+            WHEN '4-7 dias' THEN 3
+            WHEN '8-14 dias' THEN 4
+            WHEN '15-30 dias' THEN 5
+            WHEN '31-60 dias' THEN 6
+            ELSE 7
+          END
+      `, [startDate, endDate]);
+
+      const totalForDistribution = distributionResult.rows.reduce((sum, r) => sum + parseInt(r.count), 0);
+
+      const conversionTimeDistribution = distributionResult.rows.map(r => ({
+        label: r.label,
+        count: parseInt(r.count),
+        percentage: totalForDistribution > 0
+          ? ((parseInt(r.count) / totalForDistribution) * 100).toFixed(1)
+          : 0,
+      }));
+
+      // Calcular tempo médio por estágio (se houver histórico)
+      const stageTimeResult = await db.query(`
+        SELECT
+          to_status_id,
+          to_status_name,
+          ROUND(AVG(days_in_previous_status), 1) AS avg_days
+        FROM lead_status_history
+        WHERE changed_at >= $1
+          AND changed_at < ($2::date + interval '1 day')
+          AND days_in_previous_status BETWEEN 0 AND 365
+        GROUP BY to_status_id, to_status_name
+        HAVING COUNT(*) >= 5
+        ORDER BY avg_days DESC
+        LIMIT 10
+      `, [startDate, endDate]);
+
+      const avgTimeByStage = {};
+      stageTimeResult.rows.forEach(r => {
+        avgTimeByStage[r.to_status_id] = {
+          name: r.to_status_name,
+          avgDays: parseFloat(r.avg_days) || 0,
+        };
+      });
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getConversionTimeMetrics: em ${duration}ms`);
+
+      return {
+        avgConversionDays: parseFloat(row.avg_conversion_days) || 0,
+        avgInProgressDays: parseFloat(row.avg_in_progress_days) || 0,
+        totalConverted: parseInt(row.total_converted) || 0,
+        totalInProgress: parseInt(row.total_in_progress) || 0,
+        avgTimeByStage,
+        conversionTimeDistribution,
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getConversionTimeMetrics:', error.message);
+      // Fallback: calcular direto dos leads
+      return this.getConversionTimeMetricsFallback(startDate, endDate);
+    }
+  }
+
+  /**
+   * Fallback para métricas de conversão quando a tabela lead_status_history não existe
+   */
+  async getConversionTimeMetricsFallback(startDate, endDate) {
+    try {
+      const result = await db.query(`
+        WITH lead_times AS (
+          SELECT
+            CASE
+              WHEN ls.semantica = 'S' AND l.bitrix_closed_at IS NOT NULL
+              THEN EXTRACT(DAY FROM l.bitrix_closed_at - l.bitrix_created_at)::INTEGER
+              ELSE NULL
+            END AS conversion_days,
+            CASE
+              WHEN ls.semantica = 'P'
+              THEN EXTRACT(DAY FROM NOW() - l.bitrix_created_at)::INTEGER
+              ELSE NULL
+            END AS in_progress_days,
+            ls.semantica
+          FROM leads l
+          LEFT JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+          WHERE l.bitrix_created_at >= $1
+            AND l.bitrix_created_at < ($2::date + interval '1 day')
+        )
+        SELECT
+          ROUND(AVG(conversion_days) FILTER (WHERE conversion_days BETWEEN 0 AND 365), 1) AS avg_conversion_days,
+          ROUND(AVG(in_progress_days) FILTER (WHERE in_progress_days BETWEEN 0 AND 365), 1) AS avg_in_progress_days,
+          COUNT(*) FILTER (WHERE semantica = 'S') AS total_converted,
+          COUNT(*) FILTER (WHERE semantica = 'P') AS total_in_progress
+        FROM lead_times
+      `, [startDate, endDate]);
+
+      const row = result.rows[0] || {};
+
+      return {
+        avgConversionDays: parseFloat(row.avg_conversion_days) || 0,
+        avgInProgressDays: parseFloat(row.avg_in_progress_days) || 0,
+        totalConverted: parseInt(row.total_converted) || 0,
+        totalInProgress: parseInt(row.total_in_progress) || 0,
+        avgTimeByStage: {},
+        conversionTimeDistribution: [],
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getConversionTimeMetricsFallback:', error.message);
+      return {
+        avgConversionDays: 0,
+        avgInProgressDays: 0,
+        totalConverted: 0,
+        totalInProgress: 0,
+        avgTimeByStage: {},
+        conversionTimeDistribution: [],
+      };
+    }
+  }
+
+  // ==================== MARKETING KPIs: ROAS, CPL, SOURCE ATTRIBUTION ====================
+
+  /**
+   * Calcula métricas de marketing: ROAS, CPL e atribuição por fonte
+   * Combina dados de leads com dados de faturamento para calcular ROI
+   *
+   * @param {string} startDate - Data início (yyyy-MM-dd)
+   * @param {string} endDate - Data fim (yyyy-MM-dd)
+   * @param {Object} adSpend - Gastos por fonte { facebook: X, google: Y, ... }
+   * @returns {Object} Métricas de marketing
+   */
+  async getMarketingROASMetrics(startDate, endDate, adSpend = {}) {
+    const timer = Date.now();
+
+    try {
+      // 1. Buscar leads convertidos por UTM source
+      const leadsResult = await db.query(`
+        SELECT
+          l.utm_source,
+          COUNT(*) as total_leads,
+          COUNT(*) FILTER (WHERE ls.semantica = 'S') as leads_convertidos,
+          SUM(COALESCE(l.opportunity, 0)) as valor_oportunidade
+        FROM leads l
+        LEFT JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+        WHERE l.bitrix_created_at >= $1
+          AND l.bitrix_created_at < ($2::date + interval '1 day')
+        GROUP BY l.utm_source
+      `, [startDate, endDate]);
+
+      // 2. Buscar faturamento atribuído a leads convertidos
+      // Isso requer correlação leads->vendas (via customer_analytics ou correlação direta)
+      const revenueResult = await db.query(`
+        SELECT
+          l.utm_source,
+          SUM(cr.valor_liquido) as receita_atribuida
+        FROM leads l
+        JOIN customer_analytics ca ON ca.lead_id = l.id
+        JOIN contas_receber cr ON cr.cod_cliente = ca.cliente_id
+        LEFT JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+        WHERE l.bitrix_created_at >= $1
+          AND l.bitrix_created_at < ($2::date + interval '1 day')
+          AND ls.semantica = 'S'
+          AND cr.dt_lancamento >= $1
+          AND cr.dt_lancamento <= $2
+          AND cr.confirmado = 'S'
+        GROUP BY l.utm_source
+      `, [startDate, endDate]);
+
+      // Criar map de receita por fonte
+      const revenueBySource = {};
+      revenueResult.rows.forEach(r => {
+        revenueBySource[r.utm_source || 'direct'] = parseFloat(r.receita_atribuida) || 0;
+      });
+
+      // Combinar dados de leads com receita
+      const sourceMetrics = leadsResult.rows.map(row => {
+        const source = row.utm_source || 'direct';
+        const totalLeads = parseInt(row.total_leads) || 0;
+        const convertedLeads = parseInt(row.leads_convertidos) || 0;
+        const opportunityValue = parseFloat(row.valor_oportunidade) || 0;
+        const revenue = revenueBySource[source] || 0;
+
+        // Normalizar nome da fonte para match com adSpend
+        const normalizedSource = source.toLowerCase()
+          .replace(/\s+/g, '_')
+          .replace(/-/g, '_');
+
+        // Buscar gasto correspondente
+        const spend = adSpend[normalizedSource] ||
+                      adSpend[source] ||
+                      (normalizedSource.includes('facebook') || normalizedSource.includes('fb') ? adSpend.facebook : 0) ||
+                      (normalizedSource.includes('google') || normalizedSource.includes('gads') ? adSpend.google : 0) ||
+                      (normalizedSource.includes('instagram') || normalizedSource.includes('ig') ? adSpend.instagram : 0) ||
+                      0;
+
+        // Calcular métricas
+        const cpl = totalLeads > 0 && spend > 0 ? spend / totalLeads : 0;
+        const cpa = convertedLeads > 0 && spend > 0 ? spend / convertedLeads : 0;
+        const roas = spend > 0 ? revenue / spend : 0;
+        const conversionRate = totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
+
+        return {
+          source,
+          normalizedSource,
+          totalLeads,
+          convertedLeads,
+          opportunityValue,
+          revenue,
+          spend,
+          cpl: Math.round(cpl * 100) / 100,
+          cpa: Math.round(cpa * 100) / 100,
+          roas: Math.round(roas * 100) / 100,
+          conversionRate: Math.round(conversionRate * 10) / 10,
+        };
+      });
+
+      // Ordenar por total de leads
+      sourceMetrics.sort((a, b) => b.totalLeads - a.totalLeads);
+
+      // Calcular totais
+      const totals = sourceMetrics.reduce((acc, s) => {
+        acc.totalLeads += s.totalLeads;
+        acc.convertedLeads += s.convertedLeads;
+        acc.revenue += s.revenue;
+        acc.spend += s.spend;
+        return acc;
+      }, { totalLeads: 0, convertedLeads: 0, revenue: 0, spend: 0 });
+
+      totals.overallCPL = totals.totalLeads > 0 && totals.spend > 0
+        ? totals.spend / totals.totalLeads
+        : 0;
+      totals.overallCPA = totals.convertedLeads > 0 && totals.spend > 0
+        ? totals.spend / totals.convertedLeads
+        : 0;
+      totals.overallROAS = totals.spend > 0
+        ? totals.revenue / totals.spend
+        : 0;
+      totals.overallConversionRate = totals.totalLeads > 0
+        ? (totals.convertedLeads / totals.totalLeads) * 100
+        : 0;
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getMarketingROASMetrics: ${sourceMetrics.length} fontes em ${duration}ms`);
+
+      return {
+        bySource: sourceMetrics,
+        totals: {
+          ...totals,
+          overallCPL: Math.round(totals.overallCPL * 100) / 100,
+          overallCPA: Math.round(totals.overallCPA * 100) / 100,
+          overallROAS: Math.round(totals.overallROAS * 100) / 100,
+          overallConversionRate: Math.round(totals.overallConversionRate * 10) / 10,
+        },
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getMarketingROASMetrics:', error.message);
+      return {
+        bySource: [],
+        totals: {
+          totalLeads: 0,
+          convertedLeads: 0,
+          revenue: 0,
+          spend: 0,
+          overallCPL: 0,
+          overallCPA: 0,
+          overallROAS: 0,
+          overallConversionRate: 0,
+        },
+      };
+    }
+  }
+
+  /**
+   * Calcula funil de conversão avançado com métricas por estágio
+   * @param {string} startDate - Data início
+   * @param {string} endDate - Data fim
+   * @returns {Object} Dados do funil
+   */
+  async getAdvancedFunnel(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Buscar contagem de leads por status
+      const result = await db.query(`
+        SELECT
+          ls.nome as status_name,
+          ls.semantica,
+          ls.sort_order,
+          COUNT(*) as count
+        FROM leads l
+        JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+        WHERE l.bitrix_created_at >= $1
+          AND l.bitrix_created_at < ($2::date + interval '1 day')
+        GROUP BY ls.nome, ls.semantica, ls.sort_order
+        ORDER BY ls.sort_order
+      `, [startDate, endDate]);
+
+      // Calcular totais por categoria semântica
+      const categories = {
+        new: { label: 'Novos', count: 0, percentage: 100 },
+        inProgress: { label: 'Em Andamento', count: 0, percentage: 0 },
+        qualified: { label: 'Qualificados', count: 0, percentage: 0 },
+        converted: { label: 'Convertidos', count: 0, percentage: 0 },
+        lost: { label: 'Perdidos', count: 0, percentage: 0 },
+      };
+
+      const totalLeads = result.rows.reduce((sum, r) => sum + parseInt(r.count), 0);
+
+      result.rows.forEach(row => {
+        const count = parseInt(row.count);
+        const statusName = (row.status_name || '').toLowerCase();
+
+        if (statusName === 'novo' || statusName === 'new') {
+          categories.new.count += count;
+        } else if (row.semantica === 'S' || statusName.includes('convert')) {
+          categories.converted.count += count;
+        } else if (row.semantica === 'F' || statusName.includes('junk') || statusName.includes('perdido')) {
+          categories.lost.count += count;
+        } else if (statusName.includes('qualificado') || statusName.includes('qualified')) {
+          categories.qualified.count += count;
+        } else {
+          categories.inProgress.count += count;
+        }
+      });
+
+      // Calcular percentuais progressivos
+      if (totalLeads > 0) {
+        categories.inProgress.percentage = ((totalLeads - categories.new.count) / totalLeads) * 100;
+        categories.qualified.percentage = ((categories.qualified.count + categories.converted.count) / totalLeads) * 100;
+        categories.converted.percentage = (categories.converted.count / totalLeads) * 100;
+        categories.lost.percentage = (categories.lost.count / totalLeads) * 100;
+      }
+
+      // Formatar funil
+      const funnel = [
+        { stage: 'Leads Captados', count: totalLeads, percentage: 100 },
+        { stage: 'Em Atendimento', count: categories.inProgress.count + categories.qualified.count + categories.converted.count, percentage: 0 },
+        { stage: 'Qualificados', count: categories.qualified.count + categories.converted.count, percentage: 0 },
+        { stage: 'Agendados', count: categories.converted.count, percentage: 0 },
+      ];
+
+      // Calcular percentuais do funil (relativo ao estágio anterior)
+      for (let i = 1; i < funnel.length; i++) {
+        funnel[i].percentage = funnel[i - 1].count > 0
+          ? (funnel[i].count / funnel[i - 1].count) * 100
+          : 0;
+      }
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getAdvancedFunnel: ${totalLeads} leads em ${duration}ms`);
+
+      return {
+        funnel,
+        categories,
+        totalLeads,
+        conversionRate: totalLeads > 0 ? (categories.converted.count / totalLeads) * 100 : 0,
+        lossRate: totalLeads > 0 ? (categories.lost.count / totalLeads) * 100 : 0,
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getAdvancedFunnel:', error.message);
+      return {
+        funnel: [],
+        categories: {},
+        totalLeads: 0,
+        conversionRate: 0,
+        lossRate: 0,
+      };
+    }
+  }
+
+  /**
+   * Calcula atribuição de leads por campanha Bitrix com métricas avançadas
+   * @param {string} startDate - Data início
+   * @param {string} endDate - Data fim
+   * @returns {Object} Dados de atribuição por campanha
+   */
+  async getCampaignAttribution(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      const result = await db.query(`
+        SELECT
+          l.custom_fields->>'UF_CRM_1729176132205' as campanha_id,
+          COUNT(*) as total_leads,
+          COUNT(*) FILTER (WHERE ls.semantica = 'S') as leads_convertidos,
+          COUNT(*) FILTER (WHERE ls.semantica = 'F') as leads_perdidos,
+          COUNT(*) FILTER (WHERE ls.semantica = 'P') as leads_em_andamento,
+          SUM(COALESCE(l.opportunity, 0)) FILTER (WHERE ls.semantica = 'S') as valor_convertido
+        FROM leads l
+        LEFT JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+        WHERE l.bitrix_created_at >= $1
+          AND l.bitrix_created_at < ($2::date + interval '1 day')
+        GROUP BY l.custom_fields->>'UF_CRM_1729176132205'
+        ORDER BY COUNT(*) DESC
+      `, [startDate, endDate]);
+
+      const campaigns = result.rows.map(row => {
+        const campanhaId = row.campanha_id || 'NAO_PREENCHIDO';
+        const totalLeads = parseInt(row.total_leads) || 0;
+        const convertedLeads = parseInt(row.leads_convertidos) || 0;
+        const lostLeads = parseInt(row.leads_perdidos) || 0;
+        const inProgressLeads = parseInt(row.leads_em_andamento) || 0;
+        const convertedValue = parseFloat(row.valor_convertido) || 0;
+
+        return {
+          id: campanhaId,
+          name: this.getCampanhaName(campanhaId === 'NAO_PREENCHIDO' ? null : campanhaId),
+          totalLeads,
+          convertedLeads,
+          lostLeads,
+          inProgressLeads,
+          convertedValue,
+          conversionRate: totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0,
+          lossRate: totalLeads > 0 ? (lostLeads / totalLeads) * 100 : 0,
+        };
+      });
+
+      // Calcular totais
+      const totals = campaigns.reduce((acc, c) => {
+        acc.totalLeads += c.totalLeads;
+        acc.convertedLeads += c.convertedLeads;
+        acc.lostLeads += c.lostLeads;
+        acc.convertedValue += c.convertedValue;
+        return acc;
+      }, { totalLeads: 0, convertedLeads: 0, lostLeads: 0, convertedValue: 0 });
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getCampaignAttribution: ${campaigns.length} campanhas em ${duration}ms`);
+
+      return {
+        campaigns,
+        totals: {
+          ...totals,
+          overallConversionRate: totals.totalLeads > 0
+            ? (totals.convertedLeads / totals.totalLeads) * 100
+            : 0,
+          overallLossRate: totals.totalLeads > 0
+            ? (totals.lostLeads / totals.totalLeads) * 100
+            : 0,
+        },
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getCampaignAttribution:', error.message);
+      return {
+        campaigns: [],
+        totals: { totalLeads: 0, convertedLeads: 0, lostLeads: 0, convertedValue: 0 },
+      };
+    }
+  }
+
   /**
    * Mapeia ID de campanha Bitrix para nome
    */
@@ -2039,6 +2636,832 @@ class DashboardDBService {
     };
     if (!campanhaId) return 'Não preenchido';
     return CAMPANHA_MAP[String(campanhaId)] || 'Não identificado';
+  }
+
+  /**
+   * Busca funil de conversão com comparativo do período anterior
+   * @param {string} startDate - Data início
+   * @param {string} endDate - Data fim
+   * @returns {Object} Dados do funil com comparativo
+   */
+  async getFunnelComparison(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Calcular período anterior de mesma duração
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      const periodDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+      const prevStart = new Date(start);
+      prevStart.setDate(prevStart.getDate() - periodDays);
+      const prevEnd = new Date(start);
+      prevEnd.setDate(prevEnd.getDate() - 1);
+
+      const prevStartStr = format(prevStart, 'yyyy-MM-dd');
+      const prevEndStr = format(prevEnd, 'yyyy-MM-dd');
+
+      // Buscar dados de ambos os períodos
+      const [currentResult, previousResult] = await Promise.all([
+        this.getFunnelDataForPeriod(startDate, endDate),
+        this.getFunnelDataForPeriod(prevStartStr, prevEndStr),
+      ]);
+
+      // Calcular deltas
+      const comparison = {
+        current: currentResult,
+        previous: previousResult,
+        delta: {
+          totalLeads: currentResult.totalLeads - previousResult.totalLeads,
+          totalLeadsPercent: previousResult.totalLeads > 0
+            ? ((currentResult.totalLeads - previousResult.totalLeads) / previousResult.totalLeads) * 100
+            : 0,
+          converted: currentResult.categories.converted.count - previousResult.categories.converted.count,
+          convertedPercent: previousResult.categories.converted.count > 0
+            ? ((currentResult.categories.converted.count - previousResult.categories.converted.count) / previousResult.categories.converted.count) * 100
+            : 0,
+          conversionRate: currentResult.conversionRate - previousResult.conversionRate,
+        },
+        periods: {
+          current: { start: startDate, end: endDate },
+          previous: { start: prevStartStr, end: prevEndStr },
+        },
+      };
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getFunnelComparison: ${duration}ms`);
+
+      return comparison;
+    } catch (error) {
+      logger.error('[DB] Erro em getFunnelComparison:', error.message);
+      return {
+        current: { funnel: [], categories: {}, totalLeads: 0, conversionRate: 0 },
+        previous: { funnel: [], categories: {}, totalLeads: 0, conversionRate: 0 },
+        delta: { totalLeads: 0, totalLeadsPercent: 0, converted: 0, convertedPercent: 0, conversionRate: 0 },
+        periods: { current: { start: startDate, end: endDate }, previous: {} },
+      };
+    }
+  }
+
+  /**
+   * Helper para buscar dados do funil de um período específico
+   */
+  async getFunnelDataForPeriod(startDate, endDate) {
+    const result = await db.query(`
+      SELECT
+        ls.nome as status_name,
+        ls.semantica,
+        ls.sort_order,
+        COUNT(*) as count
+      FROM leads l
+      JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+      WHERE l.bitrix_created_at >= $1
+        AND l.bitrix_created_at < ($2::date + interval '1 day')
+      GROUP BY ls.nome, ls.semantica, ls.sort_order
+      ORDER BY ls.sort_order
+    `, [startDate, endDate]);
+
+    const categories = {
+      new: { label: 'Novos', count: 0, percentage: 100 },
+      inProgress: { label: 'Em Andamento', count: 0, percentage: 0 },
+      qualified: { label: 'Qualificados', count: 0, percentage: 0 },
+      converted: { label: 'Convertidos', count: 0, percentage: 0 },
+      lost: { label: 'Perdidos', count: 0, percentage: 0 },
+    };
+
+    const totalLeads = result.rows.reduce((sum, r) => sum + parseInt(r.count), 0);
+
+    result.rows.forEach(row => {
+      const count = parseInt(row.count);
+      const statusName = (row.status_name || '').toLowerCase();
+
+      if (statusName === 'novo' || statusName === 'new') {
+        categories.new.count += count;
+      } else if (row.semantica === 'S' || statusName.includes('convert')) {
+        categories.converted.count += count;
+      } else if (row.semantica === 'F' || statusName.includes('junk') || statusName.includes('perdid')) {
+        categories.lost.count += count;
+      } else if (statusName.includes('qualif')) {
+        categories.qualified.count += count;
+      } else {
+        categories.inProgress.count += count;
+      }
+    });
+
+    // Calcular percentuais
+    Object.values(categories).forEach(cat => {
+      cat.percentage = totalLeads > 0 ? Math.round((cat.count / totalLeads) * 1000) / 10 : 0;
+    });
+
+    const funnel = [
+      { stage: 'Novos', count: categories.new.count, percentage: 100 },
+      { stage: 'Em Andamento', count: categories.new.count + categories.inProgress.count, percentage: totalLeads > 0 ? ((categories.new.count + categories.inProgress.count) / totalLeads) * 100 : 0 },
+      { stage: 'Qualificados', count: categories.qualified.count + categories.converted.count, percentage: totalLeads > 0 ? ((categories.qualified.count + categories.converted.count) / totalLeads) * 100 : 0 },
+      { stage: 'Convertidos', count: categories.converted.count, percentage: totalLeads > 0 ? (categories.converted.count / totalLeads) * 100 : 0 },
+    ];
+
+    return {
+      funnel,
+      categories,
+      totalLeads,
+      conversionRate: totalLeads > 0 ? (categories.converted.count / totalLeads) * 100 : 0,
+      lossRate: totalLeads > 0 ? (categories.lost.count / totalLeads) * 100 : 0,
+    };
+  }
+
+  /**
+   * Busca estatísticas de clientes recorrentes vs novos
+   * @param {string} startDate - Data início
+   * @param {string} endDate - Data fim
+   * @returns {Object} Métricas de retenção
+   */
+  async getReturnCustomerStats(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Verificar se a coluna is_return_customer existe
+      const columnCheck = await db.query(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'leads'
+        AND column_name = 'is_return_customer'
+      `);
+
+      if (columnCheck.rows.length === 0) {
+        logger.warn('[DB] Coluna is_return_customer não existe, usando cálculo alternativo');
+        return this.calculateReturnCustomerStatsAlternative(startDate, endDate);
+      }
+
+      // Buscar estatísticas de clientes recorrentes
+      const result = await db.query(`
+        SELECT
+          COUNT(*) AS total_leads,
+          COUNT(*) FILTER (WHERE is_return_customer = TRUE) AS return_customer_leads,
+          COUNT(*) FILTER (WHERE is_return_customer = FALSE OR is_return_customer IS NULL) AS new_customer_leads,
+          COUNT(*) FILTER (WHERE status_id = 'CONVERTED' AND is_return_customer = TRUE) AS return_customer_converted,
+          COUNT(*) FILTER (WHERE status_id = 'CONVERTED' AND (is_return_customer = FALSE OR is_return_customer IS NULL)) AS new_customer_converted
+        FROM leads
+        WHERE bitrix_created_at >= $1
+          AND bitrix_created_at < ($2::date + interval '1 day')
+      `, [startDate, endDate]);
+
+      const stats = result.rows[0];
+      const totalLeads = parseInt(stats.total_leads) || 0;
+      const returnCustomerLeads = parseInt(stats.return_customer_leads) || 0;
+      const newCustomerLeads = parseInt(stats.new_customer_leads) || 0;
+      const returnConverted = parseInt(stats.return_customer_converted) || 0;
+      const newConverted = parseInt(stats.new_customer_converted) || 0;
+
+      // Buscar tendência mensal
+      const trendResult = await db.query(`
+        SELECT
+          DATE_TRUNC('month', bitrix_created_at) AS month,
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE is_return_customer = TRUE) AS returning
+        FROM leads
+        WHERE bitrix_created_at >= $1
+          AND bitrix_created_at < ($2::date + interval '1 day')
+        GROUP BY DATE_TRUNC('month', bitrix_created_at)
+        ORDER BY month
+      `, [startDate, endDate]);
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getReturnCustomerStats: ${duration}ms`);
+
+      return {
+        totalLeads,
+        returnCustomerLeads,
+        newCustomerLeads,
+        returnCustomerRate: totalLeads > 0
+          ? Math.round((returnCustomerLeads / totalLeads) * 1000) / 10
+          : 0,
+        returnCustomerConversionRate: returnCustomerLeads > 0
+          ? Math.round((returnConverted / returnCustomerLeads) * 1000) / 10
+          : 0,
+        newCustomerConversionRate: newCustomerLeads > 0
+          ? Math.round((newConverted / newCustomerLeads) * 1000) / 10
+          : 0,
+        monthlyTrend: trendResult.rows.map(r => ({
+          month: r.month,
+          total: parseInt(r.total),
+          returning: parseInt(r.returning),
+          rate: parseInt(r.total) > 0
+            ? Math.round((parseInt(r.returning) / parseInt(r.total)) * 1000) / 10
+            : 0,
+        })),
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getReturnCustomerStats:', error.message);
+      return {
+        totalLeads: 0,
+        returnCustomerLeads: 0,
+        newCustomerLeads: 0,
+        returnCustomerRate: 0,
+        returnCustomerConversionRate: 0,
+        newCustomerConversionRate: 0,
+        monthlyTrend: [],
+      };
+    }
+  }
+
+  /**
+   * Cálculo alternativo de clientes recorrentes baseado em correlação de telefone/email
+   * Usado quando a coluna is_return_customer não existe
+   */
+  async calculateReturnCustomerStatsAlternative(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Buscar leads com telefone que já existem em customer_analytics
+      const result = await db.query(`
+        WITH lead_customers AS (
+          SELECT
+            l.id,
+            l.bitrix_id,
+            l.status_id,
+            EXISTS (
+              SELECT 1 FROM customer_analytics ca
+              WHERE ca.qtd_atendimentos > 0
+              AND (
+                ca.telefone IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM jsonb_array_elements_text(l.telefones) AS phone
+                  WHERE regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace(ca.telefone, '[^0-9]', '', 'g')
+                )
+              )
+            ) AS is_return_customer
+          FROM leads l
+          WHERE l.bitrix_created_at >= $1
+            AND l.bitrix_created_at < ($2::date + interval '1 day')
+        )
+        SELECT
+          COUNT(*) AS total_leads,
+          COUNT(*) FILTER (WHERE is_return_customer = TRUE) AS return_customer_leads,
+          COUNT(*) FILTER (WHERE is_return_customer = FALSE) AS new_customer_leads,
+          COUNT(*) FILTER (WHERE status_id = 'CONVERTED' AND is_return_customer = TRUE) AS return_customer_converted,
+          COUNT(*) FILTER (WHERE status_id = 'CONVERTED' AND is_return_customer = FALSE) AS new_customer_converted
+        FROM lead_customers
+      `, [startDate, endDate]);
+
+      const stats = result.rows[0];
+      const totalLeads = parseInt(stats.total_leads) || 0;
+      const returnCustomerLeads = parseInt(stats.return_customer_leads) || 0;
+      const newCustomerLeads = parseInt(stats.new_customer_leads) || 0;
+      const returnConverted = parseInt(stats.return_customer_converted) || 0;
+      const newConverted = parseInt(stats.new_customer_converted) || 0;
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] calculateReturnCustomerStatsAlternative: ${duration}ms`);
+
+      return {
+        totalLeads,
+        returnCustomerLeads,
+        newCustomerLeads,
+        returnCustomerRate: totalLeads > 0
+          ? Math.round((returnCustomerLeads / totalLeads) * 1000) / 10
+          : 0,
+        returnCustomerConversionRate: returnCustomerLeads > 0
+          ? Math.round((returnConverted / returnCustomerLeads) * 1000) / 10
+          : 0,
+        newCustomerConversionRate: newCustomerLeads > 0
+          ? Math.round((newConverted / newCustomerLeads) * 1000) / 10
+          : 0,
+        monthlyTrend: [],
+        note: 'Cálculo baseado em correlação de telefone',
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em calculateReturnCustomerStatsAlternative:', error.message);
+      return {
+        totalLeads: 0,
+        returnCustomerLeads: 0,
+        newCustomerLeads: 0,
+        returnCustomerRate: 0,
+        returnCustomerConversionRate: 0,
+        newCustomerConversionRate: 0,
+        monthlyTrend: [],
+      };
+    }
+  }
+
+  // ==================== NOVOS INDICADORES DA APRESENTAÇÃO ====================
+
+  /**
+   * Calcula Taxa de Retenção (90 dias) e Taxa de Resgate
+   * Retenção: pacientes que retornaram dentro de 90 dias / total atendidos
+   * Resgate: pacientes inativos contactados que retornaram / total contactados
+   */
+  async getRetentionAndRescueRates(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Taxa de Retenção 90 dias
+      // Pacientes que foram atendidos no período e retornaram dentro de 90 dias
+      const retentionResult = await db.query(`
+        WITH atendidos_periodo AS (
+          SELECT DISTINCT
+            v.codcliente,
+            MIN(v.data) as primeira_visita
+          FROM vendas v
+          WHERE v.data >= $1 AND v.data <= $2
+          GROUP BY v.codcliente
+        ),
+        retornaram AS (
+          SELECT DISTINCT
+            ap.codcliente
+          FROM atendidos_periodo ap
+          JOIN vendas v2 ON ap.codcliente = v2.codcliente
+          WHERE v2.data > ap.primeira_visita
+            AND v2.data <= ap.primeira_visita + INTERVAL '90 days'
+        )
+        SELECT
+          (SELECT COUNT(*) FROM atendidos_periodo) as total_atendidos,
+          (SELECT COUNT(*) FROM retornaram) as retornaram_90_dias
+      `, [startDate, endDate]);
+
+      const retStats = retentionResult.rows[0];
+      const totalAtendidos = parseInt(retStats?.total_atendidos) || 0;
+      const retornaram90Dias = parseInt(retStats?.retornaram_90_dias) || 0;
+      const taxaRetencao = totalAtendidos > 0
+        ? Math.round((retornaram90Dias / totalAtendidos) * 1000) / 10
+        : 0;
+
+      // Taxa de Resgate - pacientes inativos que foram contactados e retornaram
+      // Baseado na tabela pacientes_inativos_historico
+      const rescueResult = await db.query(`
+        SELECT
+          COUNT(*) as total_contactados,
+          COUNT(*) FILTER (WHERE data_reativacao IS NOT NULL) as reativados,
+          COALESCE(SUM(valor_potencial), 0) as valor_potencial_total,
+          COALESCE(SUM(valor_potencial) FILTER (WHERE data_reativacao IS NOT NULL), 0) as valor_resgatado
+        FROM pacientes_inativos_historico
+        WHERE data_contato >= $1 AND data_contato <= $2
+      `, [startDate, endDate]);
+
+      const rescStats = rescueResult.rows[0];
+      const totalContactados = parseInt(rescStats?.total_contactados) || 0;
+      const reativados = parseInt(rescStats?.reativados) || 0;
+      const taxaResgate = totalContactados > 0
+        ? Math.round((reativados / totalContactados) * 1000) / 10
+        : 0;
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getRetentionAndRescueRates: ${duration}ms`);
+
+      return {
+        retencao: {
+          totalAtendidos,
+          retornaram90Dias,
+          taxa: taxaRetencao,
+          label: 'Taxa de Retenção (90 dias)',
+        },
+        resgate: {
+          totalContactados,
+          reativados,
+          taxa: taxaResgate,
+          valorPotencial: parseFloat(rescStats?.valor_potencial_total) || 0,
+          valorResgatado: parseFloat(rescStats?.valor_resgatado) || 0,
+          label: 'Taxa de Resgate',
+        },
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getRetentionAndRescueRates:', error.message);
+      return {
+        retencao: { totalAtendidos: 0, retornaram90Dias: 0, taxa: 0, label: 'Taxa de Retenção (90 dias)' },
+        resgate: { totalContactados: 0, reativados: 0, taxa: 0, valorPotencial: 0, valorResgatado: 0, label: 'Taxa de Resgate' },
+      };
+    }
+  }
+
+  /**
+   * Calcula Faturamento por Médico/Profissional
+   * Quanto cada médico gera de receita por mês
+   */
+  async getFaturamentoPorMedico(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      const result = await db.query(`
+        SELECT
+          p.nome as medico,
+          p.codprofissional,
+          COUNT(DISTINCT v.codvenda) as total_atendimentos,
+          COALESCE(SUM(vi.valor_total), 0) as faturamento,
+          COALESCE(AVG(vi.valor_total), 0) as ticket_medio
+        FROM vendas v
+        JOIN vendas_itens vi ON v.codvenda = vi.codvenda
+        LEFT JOIN profissionais p ON v.codprofissional = p.codprofissional
+        WHERE v.data >= $1 AND v.data <= $2
+          AND p.nome IS NOT NULL
+          AND p.nome != ''
+        GROUP BY p.codprofissional, p.nome
+        ORDER BY faturamento DESC
+        LIMIT 20
+      `, [startDate, endDate]);
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getFaturamentoPorMedico: ${result.rows.length} médicos em ${duration}ms`);
+
+      return result.rows.map(row => ({
+        medico: row.medico,
+        codprofissional: row.codprofissional,
+        totalAtendimentos: parseInt(row.total_atendimentos) || 0,
+        faturamento: parseFloat(row.faturamento) || 0,
+        ticketMedio: parseFloat(row.ticket_medio) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB] Erro em getFaturamentoPorMedico:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Calcula Faturamento por Serviço/Categoria
+   * Consultas, Programas de Acompanhamento, Protocolos, Implantes, Estética
+   */
+  async getFaturamentoPorServico(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      const result = await db.query(`
+        SELECT
+          CASE
+            WHEN LOWER(vi.nome) LIKE '%consult%' THEN 'Consultas'
+            WHEN LOWER(vi.nome) LIKE '%programa%' OR LOWER(vi.nome) LIKE '%acompanhamento%' THEN 'Programas de Acompanhamento'
+            WHEN LOWER(vi.nome) LIKE '%protocol%' OR LOWER(vi.nome) LIKE '%im%' THEN 'Protocolos IM'
+            WHEN LOWER(vi.nome) LIKE '%implant%' OR LOWER(vi.nome) LIKE '%hormon%' THEN 'Implantes Hormonais'
+            WHEN LOWER(vi.nome) LIKE '%estetica%' OR LOWER(vi.nome) LIKE '%dermat%' OR LOWER(vi.nome) LIKE '%botox%' OR LOWER(vi.nome) LIKE '%peeling%' THEN 'Estética / Dermatologia'
+            WHEN LOWER(vi.nome) LIKE '%laser%' OR LOWER(vi.nome) LIKE '%depila%' THEN 'Laser / Depilação'
+            WHEN LOWER(vi.nome) LIKE '%massag%' OR LOWER(vi.nome) LIKE '%drenag%' OR LOWER(vi.nome) LIKE '%spa%' THEN 'SPA / Massagens'
+            ELSE 'Outros'
+          END as categoria,
+          COUNT(*) as quantidade,
+          COALESCE(SUM(vi.valor_total), 0) as faturamento
+        FROM vendas v
+        JOIN vendas_itens vi ON v.codvenda = vi.codvenda
+        WHERE v.data >= $1 AND v.data <= $2
+        GROUP BY categoria
+        ORDER BY faturamento DESC
+      `, [startDate, endDate]);
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getFaturamentoPorServico: ${result.rows.length} categorias em ${duration}ms`);
+
+      return result.rows.map(row => ({
+        categoria: row.categoria,
+        quantidade: parseInt(row.quantidade) || 0,
+        faturamento: parseFloat(row.faturamento) || 0,
+      }));
+    } catch (error) {
+      logger.error('[DB] Erro em getFaturamentoPorServico:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Calcula Ticket Médio de Consultas Novas vs Recorrentes
+   * Novo: primeira compra do cliente
+   * Recorrente: cliente que já comprou antes
+   */
+  async getTicketMedioNovosVsRecorrentes(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      const result = await db.query(`
+        WITH primeira_compra AS (
+          SELECT
+            codcliente,
+            MIN(data) as primeira_data
+          FROM vendas
+          GROUP BY codcliente
+        ),
+        vendas_classificadas AS (
+          SELECT
+            v.codvenda,
+            v.codcliente,
+            v.data,
+            CASE
+              WHEN v.data = pc.primeira_data THEN 'novo'
+              ELSE 'recorrente'
+            END as tipo_cliente
+          FROM vendas v
+          JOIN primeira_compra pc ON v.codcliente = pc.codcliente
+          WHERE v.data >= $1 AND v.data <= $2
+        )
+        SELECT
+          vc.tipo_cliente,
+          COUNT(DISTINCT vc.codvenda) as total_vendas,
+          COUNT(DISTINCT vc.codcliente) as total_clientes,
+          COALESCE(SUM(vi.valor_total), 0) as faturamento,
+          COALESCE(AVG(vi.valor_total), 0) as ticket_medio_item,
+          COALESCE(SUM(vi.valor_total) / NULLIF(COUNT(DISTINCT vc.codvenda), 0), 0) as ticket_medio_venda
+        FROM vendas_classificadas vc
+        JOIN vendas_itens vi ON vc.codvenda = vi.codvenda
+        GROUP BY vc.tipo_cliente
+      `, [startDate, endDate]);
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getTicketMedioNovosVsRecorrentes: ${duration}ms`);
+
+      const novos = result.rows.find(r => r.tipo_cliente === 'novo') || {};
+      const recorrentes = result.rows.find(r => r.tipo_cliente === 'recorrente') || {};
+
+      return {
+        novos: {
+          totalVendas: parseInt(novos.total_vendas) || 0,
+          totalClientes: parseInt(novos.total_clientes) || 0,
+          faturamento: parseFloat(novos.faturamento) || 0,
+          ticketMedio: parseFloat(novos.ticket_medio_venda) || 0,
+        },
+        recorrentes: {
+          totalVendas: parseInt(recorrentes.total_vendas) || 0,
+          totalClientes: parseInt(recorrentes.total_clientes) || 0,
+          faturamento: parseFloat(recorrentes.faturamento) || 0,
+          ticketMedio: parseFloat(recorrentes.ticket_medio_venda) || 0,
+        },
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getTicketMedioNovosVsRecorrentes:', error.message);
+      return {
+        novos: { totalVendas: 0, totalClientes: 0, faturamento: 0, ticketMedio: 0 },
+        recorrentes: { totalVendas: 0, totalClientes: 0, faturamento: 0, ticketMedio: 0 },
+      };
+    }
+  }
+
+  /**
+   * Calcula Conversão por Canal (WhatsApp vs Ligação)
+   * Baseado na origem do lead (SOURCE_ID ou UTM)
+   */
+  async getConversaoPorCanal(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      const result = await db.query(`
+        SELECT
+          CASE
+            WHEN LOWER(COALESCE(source_nome, '')) LIKE '%whatsapp%'
+              OR LOWER(COALESCE(utm_source, '')) LIKE '%whatsapp%'
+              OR LOWER(COALESCE(utm_medium, '')) LIKE '%whatsapp%'
+              THEN 'WhatsApp'
+            WHEN LOWER(COALESCE(source_nome, '')) LIKE '%ligacao%'
+              OR LOWER(COALESCE(source_nome, '')) LIKE '%ligação%'
+              OR LOWER(COALESCE(source_nome, '')) LIKE '%telefone%'
+              OR LOWER(COALESCE(source_nome, '')) LIKE '%call%'
+              THEN 'Ligação'
+            WHEN LOWER(COALESCE(utm_source, '')) LIKE '%instagram%'
+              OR LOWER(COALESCE(utm_medium, '')) LIKE '%instagram%'
+              THEN 'Instagram'
+            WHEN LOWER(COALESCE(utm_source, '')) LIKE '%facebook%'
+              OR LOWER(COALESCE(utm_medium, '')) LIKE '%facebook%'
+              THEN 'Facebook'
+            WHEN LOWER(COALESCE(utm_source, '')) LIKE '%google%'
+              THEN 'Google'
+            ELSE 'Outros'
+          END as canal,
+          COUNT(*) as total_mensagens,
+          COUNT(*) FILTER (WHERE status_id = 'CONVERTED' OR status_semantica = 'success') as agendamentos,
+          COUNT(DISTINCT CASE WHEN status_id = 'CONVERTED' OR status_semantica = 'success' THEN bitrix_id END) as leads_convertidos
+        FROM leads l
+        LEFT JOIN lead_sources ls ON l.source_id = ls.bitrix_source_id
+        WHERE l.bitrix_created_at >= $1
+          AND l.bitrix_created_at < ($2::date + interval '1 day')
+        GROUP BY canal
+        ORDER BY total_mensagens DESC
+      `, [startDate, endDate]);
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getConversaoPorCanal: ${result.rows.length} canais em ${duration}ms`);
+
+      return result.rows.map(row => ({
+        canal: row.canal,
+        totalMensagens: parseInt(row.total_mensagens) || 0,
+        agendamentos: parseInt(row.agendamentos) || 0,
+        taxaConversao: parseInt(row.total_mensagens) > 0
+          ? Math.round((parseInt(row.agendamentos) / parseInt(row.total_mensagens)) * 1000) / 10
+          : 0,
+      }));
+    } catch (error) {
+      logger.error('[DB] Erro em getConversaoPorCanal:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Calcula Taxa de No-Show (faltas em consultas agendadas)
+   * Baseado em agendamentos vs comparecimentos
+   */
+  async getTaxaNoShow(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // No-show baseado em leads que foram CONVERTED (agendaram) mas não aparecem em vendas
+      const result = await db.query(`
+        WITH agendados AS (
+          SELECT
+            l.bitrix_id,
+            l.nome,
+            l.bitrix_created_at,
+            l.telefones
+          FROM leads l
+          WHERE l.status_id = 'CONVERTED'
+            AND l.bitrix_created_at >= $1
+            AND l.bitrix_created_at < ($2::date + interval '1 day')
+        ),
+        compareceram AS (
+          SELECT DISTINCT a.bitrix_id
+          FROM agendados a
+          JOIN clientes c ON (
+            c.telefone IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(a.telefones) AS phone
+              WHERE regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace(c.telefone, '[^0-9]', '', 'g')
+            )
+          )
+          JOIN vendas v ON v.codcliente = c.codcliente
+          WHERE v.data >= $1 AND v.data <= ($2::date + interval '30 days')
+        )
+        SELECT
+          (SELECT COUNT(*) FROM agendados) as total_agendados,
+          (SELECT COUNT(*) FROM compareceram) as compareceram
+      `, [startDate, endDate]);
+
+      const stats = result.rows[0];
+      const totalAgendados = parseInt(stats?.total_agendados) || 0;
+      const compareceram = parseInt(stats?.compareceram) || 0;
+      const faltas = Math.max(0, totalAgendados - compareceram);
+      const taxaNoShow = totalAgendados > 0
+        ? Math.round((faltas / totalAgendados) * 1000) / 10
+        : 0;
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getTaxaNoShow: ${duration}ms`);
+
+      return {
+        totalAgendados,
+        compareceram,
+        faltas,
+        taxaNoShow,
+        impacto: {
+          agendaFalsa: faltas,
+          medicoOcioso: Math.round(faltas * 0.5), // Estimativa: 30min por consulta
+          faturamentoPerdido: faltas * 350, // Estimativa média de consulta
+        },
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getTaxaNoShow:', error.message);
+      return {
+        totalAgendados: 0,
+        compareceram: 0,
+        faltas: 0,
+        taxaNoShow: 0,
+        impacto: { agendaFalsa: 0, medicoOcioso: 0, faturamentoPerdido: 0 },
+      };
+    }
+  }
+
+  /**
+   * Calcula Taxa de Conversão de Propostas (Pós-consulta)
+   * Quanto do que foi prescrito/orçado virou venda
+   */
+  async getTaxaConversaoPropostas(startDate, endDate) {
+    const timer = Date.now();
+
+    try {
+      // Baseado em orçamentos vs vendas efetivadas
+      // Se não houver tabela de orçamentos, usa deals como proxy
+      const result = await db.query(`
+        SELECT
+          COUNT(DISTINCT d.bitrix_id) as total_propostas,
+          COUNT(DISTINCT d.bitrix_id) FILTER (WHERE d.stage_id = 'WON' OR d.status_semantica = 'success') as propostas_fechadas,
+          COALESCE(SUM(d.opportunity), 0) as valor_prescrito,
+          COALESCE(SUM(d.opportunity) FILTER (WHERE d.stage_id = 'WON' OR d.status_semantica = 'success'), 0) as valor_vendido
+        FROM deals d
+        WHERE d.bitrix_created_at >= $1
+          AND d.bitrix_created_at < ($2::date + interval '1 day')
+      `, [startDate, endDate]);
+
+      const stats = result.rows[0];
+      const totalPropostas = parseInt(stats?.total_propostas) || 0;
+      const propostasFechadas = parseInt(stats?.propostas_fechadas) || 0;
+      const valorPrescrito = parseFloat(stats?.valor_prescrito) || 0;
+      const valorVendido = parseFloat(stats?.valor_vendido) || 0;
+
+      const taxaConversao = totalPropostas > 0
+        ? Math.round((propostasFechadas / totalPropostas) * 1000) / 10
+        : 0;
+
+      const taxaConversaoValor = valorPrescrito > 0
+        ? Math.round((valorVendido / valorPrescrito) * 1000) / 10
+        : 0;
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getTaxaConversaoPropostas: ${duration}ms`);
+
+      return {
+        totalPropostas,
+        propostasFechadas,
+        taxaConversao,
+        valorPrescrito,
+        valorVendido,
+        taxaConversaoValor,
+      };
+    } catch (error) {
+      logger.error('[DB] Erro em getTaxaConversaoPropostas:', error.message);
+      return {
+        totalPropostas: 0,
+        propostasFechadas: 0,
+        taxaConversao: 0,
+        valorPrescrito: 0,
+        valorVendido: 0,
+        taxaConversaoValor: 0,
+      };
+    }
+  }
+
+  /**
+   * Calcula CAC (Custo de Aquisição de Cliente) por Canal
+   * CAC = Investimento no canal / Novos pacientes vindos do canal
+   */
+  async getCACPorCanal(startDate, endDate, investimentoPorCanal = {}) {
+    const timer = Date.now();
+
+    try {
+      // Buscar novos pacientes por canal de origem
+      const result = await db.query(`
+        WITH novos_pacientes AS (
+          SELECT
+            v.codcliente,
+            c.nome as cliente_nome,
+            MIN(v.data) as primeira_compra
+          FROM vendas v
+          JOIN clientes c ON v.codcliente = c.codcliente
+          GROUP BY v.codcliente, c.nome
+          HAVING MIN(v.data) >= $1 AND MIN(v.data) <= $2
+        ),
+        pacientes_com_origem AS (
+          SELECT
+            np.codcliente,
+            np.cliente_nome,
+            np.primeira_compra,
+            CASE
+              WHEN l.utm_source ILIKE '%instagram%' OR l.utm_medium ILIKE '%instagram%' THEN 'Instagram Ads'
+              WHEN l.utm_source ILIKE '%google%' THEN 'Google Ads'
+              WHEN l.utm_source ILIKE '%facebook%' OR l.utm_medium ILIKE '%facebook%' THEN 'Facebook Ads'
+              WHEN l.source_id IN ('CALL', 'PHONE') OR ls.nome ILIKE '%ligação%' THEN 'Ligação'
+              WHEN ls.nome ILIKE '%indicação%' OR ls.nome ILIKE '%indicacao%' THEN 'Indicação'
+              WHEN l.utm_source ILIKE '%influencer%' OR l.utm_campaign ILIKE '%influencer%' THEN 'Influencer'
+              ELSE 'Outros'
+            END as canal
+          FROM novos_pacientes np
+          LEFT JOIN clientes c ON np.codcliente = c.codcliente
+          LEFT JOIN leads l ON (
+            c.telefone IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM jsonb_array_elements_text(l.telefones) AS phone
+              WHERE regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace(c.telefone, '[^0-9]', '', 'g')
+            )
+          )
+          LEFT JOIN lead_sources ls ON l.source_id = ls.bitrix_source_id
+        )
+        SELECT
+          canal,
+          COUNT(*) as novos_pacientes
+        FROM pacientes_com_origem
+        GROUP BY canal
+        ORDER BY novos_pacientes DESC
+      `, [startDate, endDate]);
+
+      const duration = Date.now() - timer;
+      logger.debug(`[DB] getCACPorCanal: ${result.rows.length} canais em ${duration}ms`);
+
+      // Investimentos default (podem ser passados via parâmetro)
+      const defaultInvestimentos = {
+        'Instagram Ads': 18000,
+        'Google Ads': 12000,
+        'Facebook Ads': 8000,
+        'Indicação': 3000,
+        'Influencer': 5000,
+        'Ligação': 2000,
+        'Outros': 1000,
+      };
+
+      const investimentos = { ...defaultInvestimentos, ...investimentoPorCanal };
+
+      return result.rows.map(row => {
+        const investimento = investimentos[row.canal] || 0;
+        const novosPacientes = parseInt(row.novos_pacientes) || 0;
+        const cac = novosPacientes > 0 ? Math.round(investimento / novosPacientes) : 0;
+
+        return {
+          canal: row.canal,
+          investimento,
+          novosPacientes,
+          cac,
+        };
+      });
+    } catch (error) {
+      logger.error('[DB] Erro em getCACPorCanal:', error.message);
+      return [];
+    }
   }
 }
 

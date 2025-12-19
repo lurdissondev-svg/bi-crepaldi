@@ -8,6 +8,7 @@ interface Column<T> {
   render?: (value: any, row: T) => string
   class?: string
   headerClass?: string
+  emphasis?: boolean // Highlight this column value
 }
 
 const props = withDefaults(defineProps<{
@@ -17,11 +18,28 @@ const props = withDefaults(defineProps<{
   showRowCount?: boolean
   emptyMessage?: string
   clickable?: boolean
+  density?: 'compact' | 'normal' | 'comfortable'
+  stickyHeader?: boolean
+  maxHeight?: string
 }>(), {
   maxRows: 10,
   showRowCount: true,
   emptyMessage: 'Nenhum dado disponível',
   clickable: false,
+  density: 'normal',
+  stickyHeader: false,
+  maxHeight: 'auto',
+})
+
+const densityClasses = computed(() => {
+  switch (props.density) {
+    case 'compact':
+      return { header: 'px-3 py-2', cell: 'px-3 py-2' }
+    case 'comfortable':
+      return { header: 'px-5 py-4', cell: 'px-5 py-4' }
+    default:
+      return { header: 'px-4 py-3', cell: 'px-4 py-3' }
+  }
 })
 
 const emit = defineEmits<{
@@ -44,21 +62,27 @@ function getValue(row: T, key: string | keyof T): any {
 
 <template>
   <div class="card overflow-hidden">
-    <div v-if="showRowCount" class="px-4 py-3 border-b border-[var(--color-border-subtle)]">
-      <span class="text-sm text-[var(--color-text-muted)]">
+    <div v-if="showRowCount" class="px-4 py-2.5 border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-tertiary)]">
+      <span class="text-xs text-[var(--color-text-muted)]">
         Mostrando {{ displayData.length }} de {{ data.length }} registros
       </span>
     </div>
 
-    <div class="overflow-x-auto">
+    <div
+      class="overflow-x-auto"
+      :style="{ maxHeight: maxHeight !== 'auto' ? maxHeight : undefined }"
+      :class="{ 'overflow-y-auto': maxHeight !== 'auto' }"
+    >
       <table class="w-full">
-        <thead>
-          <tr class="border-b border-[var(--color-border-subtle)]">
+        <thead :class="{ 'sticky top-0 z-10': stickyHeader }">
+          <tr class="border-b border-[var(--color-border-subtle)] bg-[var(--color-bg-elevated)]">
             <th
               v-for="column in columns"
               :key="String(column.key)"
               :class="cn(
-                'px-4 py-3 text-left text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider',
+                densityClasses.header,
+                'text-left text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider whitespace-nowrap',
+                stickyHeader && 'bg-[var(--color-bg-elevated)]',
                 column.headerClass
               )"
             >
@@ -66,20 +90,28 @@ function getValue(row: T, key: string | keyof T): any {
             </th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="divide-y divide-[var(--color-border-subtle)]">
           <tr
             v-for="(row, index) in displayData"
             :key="index"
             :class="cn(
-              'border-b border-[var(--color-border-subtle)] last:border-0',
-              clickable && 'cursor-pointer hover:bg-[var(--color-bg-hover)] transition-colors'
+              'transition-colors',
+              clickable && 'cursor-pointer',
+              'hover:bg-[var(--color-bg-hover)]'
             )"
             @click="clickable && emit('row-click', row)"
           >
             <td
               v-for="column in columns"
               :key="String(column.key)"
-              :class="cn('px-4 py-3 text-sm text-[var(--color-text-primary)]', column.class)"
+              :class="cn(
+                densityClasses.cell,
+                'text-sm',
+                column.emphasis
+                  ? 'text-[var(--color-text-primary)] font-semibold tabular-nums'
+                  : 'text-[var(--color-text-secondary)]',
+                column.class
+              )"
             >
               <template v-if="column.render">
                 {{ column.render(getValue(row, column.key), row) }}

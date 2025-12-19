@@ -24,6 +24,23 @@ import type {
   MarketingROIData,
   SpendTrendData,
   MetaAdsSummary,
+  // Phase 2-4 new types
+  ConversionTimeMetrics,
+  CustomerLTVMetrics,
+  VoucherAnalytics,
+  RecurrenceMetrics,
+  MarketingROASMetrics,
+  AdvancedFunnel,
+  CampaignAttribution,
+  // Novos indicadores da apresentação
+  RetentionRescueData,
+  FaturamentoMedico,
+  FaturamentoServico,
+  TicketMedioTipoData,
+  ConversaoCanal,
+  NoShowData,
+  ConversaoPropostasData,
+  CACCanal,
 } from '../types';
 import type {
   User,
@@ -294,6 +311,191 @@ class ApiService {
   async getChurnRiskSummary(): Promise<ChurnRiskSummaryResponse> {
     const response = await this.client.get<ApiResponse<ChurnRiskSummaryResponse>>(
       '/dashboard/churn-risk-summary'
+    );
+    return response.data.data;
+  }
+
+  // ===============================
+  // Phase 2-4: New Analytics Endpoints
+  // ===============================
+
+  /**
+   * Retorna métricas de tempo de conversão por estágio do lead.
+   * Inclui distribuição de tempo de conversão para visualização em histograma.
+   */
+  async getConversionTime(filters: Partial<FilterState> = {}): Promise<ConversionTimeMetrics> {
+    const response = await this.client.get<ApiResponse<ConversionTimeMetrics>>(
+      '/dashboard/conversion-time',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna métricas de ROAS, CPL e CPA por fonte de lead.
+   * Requer adSpend como parâmetro para calcular ROAS/CPL.
+   */
+  async getMarketingROAS(filters: Partial<FilterState> = {}, adSpend?: number): Promise<MarketingROASMetrics> {
+    const params = {
+      ...this.buildParams(filters),
+      ...(adSpend !== undefined && { ad_spend: String(adSpend) }),
+    };
+    const response = await this.client.get<ApiResponse<MarketingROASMetrics>>(
+      '/dashboard/marketing-roas',
+      { params }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna funil de conversão avançado com taxas de drop-off por estágio.
+   */
+  async getAdvancedFunnel(filters: Partial<FilterState> = {}): Promise<AdvancedFunnel> {
+    const response = await this.client.get<ApiResponse<AdvancedFunnel>>(
+      '/dashboard/advanced-funnel',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna atribuição de conversão por campanha do Bitrix.
+   */
+  async getCampaignAttribution(filters: Partial<FilterState> = {}): Promise<CampaignAttribution> {
+    const response = await this.client.get<ApiResponse<CampaignAttribution>>(
+      '/dashboard/campaign-attribution',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna métricas de LTV (Lifetime Value) dos clientes.
+   * Inclui distribuição de LTV, taxa de retenção e churn.
+   */
+  async getCustomerLTV(filters: Partial<FilterState> = {}): Promise<CustomerLTVMetrics> {
+    const response = await this.client.get<ApiResponse<CustomerLTVMetrics>>(
+      '/dashboard/customer-ltv',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna analytics de vouchers vendidos.
+   */
+  async getVoucherAnalytics(filters: Partial<FilterState> = {}): Promise<VoucherAnalytics> {
+    const response = await this.client.get<ApiResponse<VoucherAnalytics>>(
+      '/dashboard/voucher-analytics',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna métricas de recorrência de pacientes.
+   * Inclui taxa de recorrência e intervalo médio entre visitas.
+   */
+  async getRecurrenceMetrics(filters: Partial<FilterState> = {}, minIntervalDays?: number): Promise<RecurrenceMetrics> {
+    const params = {
+      ...this.buildParams(filters),
+      ...(minIntervalDays !== undefined && { min_interval_days: String(minIntervalDays) }),
+    };
+    const response = await this.client.get<ApiResponse<RecurrenceMetrics>>(
+      '/dashboard/recurrence-metrics',
+      { params }
+    );
+    return response.data.data;
+  }
+
+  // ===============================
+  // Novos Indicadores da Apresentação (Gestão por Blocos Operacionais)
+  // ===============================
+
+  /**
+   * Retorna Taxa de Retenção (90 dias) e Taxa de Resgate
+   */
+  async getRetentionRescue(filters: Partial<FilterState> = {}): Promise<RetentionRescueData> {
+    const response = await this.client.get<ApiResponse<RetentionRescueData>>(
+      '/dashboard/retention-rescue',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna Faturamento por Médico/Profissional
+   */
+  async getFaturamentoMedico(filters: Partial<FilterState> = {}): Promise<FaturamentoMedico[]> {
+    const response = await this.client.get<ApiResponse<FaturamentoMedico[]>>(
+      '/dashboard/faturamento-medico',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna Faturamento por Serviço/Categoria
+   */
+  async getFaturamentoServico(filters: Partial<FilterState> = {}): Promise<FaturamentoServico[]> {
+    const response = await this.client.get<ApiResponse<FaturamentoServico[]>>(
+      '/dashboard/faturamento-servico',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna Ticket Médio Novos vs Recorrentes
+   */
+  async getTicketMedioTipo(filters: Partial<FilterState> = {}): Promise<TicketMedioTipoData> {
+    const response = await this.client.get<ApiResponse<TicketMedioTipoData>>(
+      '/dashboard/ticket-medio-tipo',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna Conversão por Canal (WhatsApp vs Ligação)
+   */
+  async getConversaoCanal(filters: Partial<FilterState> = {}): Promise<ConversaoCanal[]> {
+    const response = await this.client.get<ApiResponse<ConversaoCanal[]>>(
+      '/dashboard/conversao-canal',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna Taxa de No-Show
+   */
+  async getNoShow(filters: Partial<FilterState> = {}): Promise<NoShowData> {
+    const response = await this.client.get<ApiResponse<NoShowData>>(
+      '/dashboard/no-show',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna Taxa de Conversão de Propostas
+   */
+  async getConversaoPropostas(filters: Partial<FilterState> = {}): Promise<ConversaoPropostasData> {
+    const response = await this.client.get<ApiResponse<ConversaoPropostasData>>(
+      '/dashboard/conversao-propostas',
+      { params: this.buildParams(filters) }
+    );
+    return response.data.data;
+  }
+
+  /**
+   * Retorna CAC (Custo de Aquisição de Cliente) por Canal
+   */
+  async getCACCanal(filters: Partial<FilterState> = {}): Promise<CACCanal[]> {
+    const response = await this.client.get<ApiResponse<CACCanal[]>>(
+      '/dashboard/cac-canal',
+      { params: this.buildParams(filters) }
     );
     return response.data.data;
   }

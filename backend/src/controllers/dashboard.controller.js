@@ -167,6 +167,8 @@ export const dashboardController = {
         faturamentoAnoAtual,
         faturamentoAnoAnterior,
         faturamentoHoje,
+        faturamentoMensalHistorico,
+        faturamentoDiarioData,
         newPatientStatsMensal,
         newPatientStatsAnual,
       ] = await Promise.all([
@@ -188,6 +190,14 @@ export const dashboardController = {
         ),
         // Busca TODAS as vendas de hoje sem filtro de estabelecimento
         belleService.getFaturamentoHoje(today),
+        // Busca histórico mensal do banco (para gráfico de barras anual)
+        dashboardDBService.getFaturamentoMensalFromDB(
+          dateRanges.thisYear.start,
+          dateRanges.thisYear.end,
+          centrosCusto
+        ),
+        // Busca faturamento diário do período selecionado
+        dashboardDBService.getFaturamentoDiarioFromDB(startDate, endDate, centrosCusto),
         // Calcula porcentagem de pacientes novos vs recorrentes (mensal)
         dashboardDBService.getNewPatientRevenuePercentage(startDate, endDate, centrosCusto),
         // Calcula porcentagem de pacientes novos vs recorrentes (anual)
@@ -256,8 +266,15 @@ export const dashboardController = {
             valorFormatado: formatCurrency(faturamentoHoje?.faturamentoTotal || 0),
             quantidade: faturamentoHoje?.quantidadeMovimentos || 0,
           },
-          faturamentoDiario: faturamentoAtual.faturamentoDiario || [],
-          faturamentoMensalHistorico: faturamentoAnoAtual.faturamentoMensal || [],
+          // Faturamento diário - prioriza dados do banco, fallback para API
+          faturamentoDiario: faturamentoDiarioData.length > 0
+            ? faturamentoDiarioData.map(row => ({
+                data: row.data_referencia,
+                valor: parseFloat(row.faturamento_bruto) || 0,
+              }))
+            : (faturamentoAtual.faturamentoDiario || []),
+          // Histórico mensal do ano - sempre do banco
+          faturamentoMensalHistorico: faturamentoMensalHistorico || [],
         },
       });
     } catch (error) {
@@ -772,30 +789,39 @@ export const dashboardController = {
       // TUDO DO BANCO - sem chamadas a APIs externas
       const faturamento = await dashboardDBService.getFaturamentoFromDB(startDate, endDate, []);
 
-      // Calcular faturamento por categoria baseado nos estabelecimentos
+      // Usar configuração de codestabs para classificar corretamente
+      const metasConfig = config.metas;
       const faturamentoPorCategoria = { spa: 0, convenios: 0, belaLaser: 0, nutrologia: 0 };
-      if (faturamento.porEstabelecimento) {
+
+      if (faturamento && faturamento.porEstabelecimento) {
         faturamento.porEstabelecimento.forEach(estab => {
-          const nomeEstab = (estab.estabelecimento || estab.nome || '').toLowerCase();
-          if (nomeEstab.includes('conv')) {
-            faturamentoPorCategoria.convenios += estab.valor || 0;
-          } else if (nomeEstab.includes('bela') || nomeEstab.includes('laser')) {
-            faturamentoPorCategoria.belaLaser += estab.valor || 0;
-          } else if (nomeEstab.includes('nutro') || nomeEstab.includes('nutri')) {
-            faturamentoPorCategoria.nutrologia += estab.valor || 0;
-          } else {
-            // Default para SPA
+          const codestab = parseInt(estab.codestab);
+
+          // Usar codestabs da configuração para classificar
+          if (metasConfig.spa.codestabs.includes(codestab)) {
             faturamentoPorCategoria.spa += estab.valor || 0;
+          } else if (metasConfig.convenios.codestabs.includes(codestab)) {
+            faturamentoPorCategoria.convenios += estab.valor || 0;
+          } else if (metasConfig.belaLaser.codestabs.includes(codestab)) {
+            faturamentoPorCategoria.belaLaser += estab.valor || 0;
+          } else if (metasConfig.nutrologia.codestabs.includes(codestab)) {
+            faturamentoPorCategoria.nutrologia += estab.valor || 0;
           }
+          // Nota: Dermato (1) não é incluído automaticamente - requer filtro por profissional
+          // Drips (10) não está configurado em nenhuma meta
         });
       }
+
+      // Buscar faturamento adicional de Dermato (DRA KELLY DA CAS) para SPA
+      // Esta lógica complexa requer filtro por profissional, mantida simples por agora
+      // TODO: Implementar filtro por profissional para Dermato se necessário
 
       // Buscar dias úteis configurados no banco (ou calcula automaticamente)
       const totalDias = await getBusinessDaysForPeriod(startDate, endDate);
 
       // Calcular dias passados e restantes proporcionalmente
-      const start = new Date(startDate + 'T12:00:00');
-      const end = new Date(endDate + 'T12:00:00');
+      const start = new Date(startDate);
+      const end = new Date(endDate);
       const hoje = new Date();
       hoje.setHours(12, 0, 0, 0);
 
@@ -1128,6 +1154,214 @@ export const dashboardController = {
     }
   },
 
+  // ==================== PHASE 3 & 4: MARKETING KPIs ====================
+
+  /**
+   * Retorna métricas de tempo de conversão de leads
+   * GET /api/dashboard/conversion-time
+   */
+  async getConversionTime(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const metrics = await dashboardDBService.getConversionTimeMetrics(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: metrics,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar tempo de conversão:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar tempo de conversão',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna métricas de ROAS, CPL e CPA por fonte
+   * GET /api/dashboard/marketing-roas
+   * Query: data_inicio, data_fim, ad_spend_facebook, ad_spend_google, ad_spend_instagram
+   */
+  async getMarketingROAS(req, res) {
+    try {
+      const { data_inicio, data_fim, ad_spend_facebook, ad_spend_google, ad_spend_instagram } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      // Construir objeto de gastos com ads
+      const adSpend = {
+        facebook: parseFloat(ad_spend_facebook) || 0,
+        google: parseFloat(ad_spend_google) || 0,
+        instagram: parseFloat(ad_spend_instagram) || 0,
+      };
+
+      const metrics = await dashboardDBService.getMarketingROASMetrics(startDate, endDate, adSpend);
+
+      res.json({
+        success: true,
+        data: metrics,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar métricas ROAS:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar métricas ROAS',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna funil de conversão avançado com drop-off
+   * GET /api/dashboard/advanced-funnel
+   */
+  async getAdvancedFunnel(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const funnel = await dashboardDBService.getAdvancedFunnel(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: funnel,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar funil avançado:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar funil avançado',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna atribuição de leads por campanha Bitrix
+   * GET /api/dashboard/campaign-attribution
+   */
+  async getCampaignAttribution(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const attribution = await dashboardDBService.getCampaignAttribution(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: attribution,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar atribuição por campanha:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar atribuição por campanha',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna métricas de Customer LTV e retenção
+   * GET /api/dashboard/customer-ltv
+   */
+  async getCustomerLTV(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisYear.start;
+      const endDate = data_fim || dateRanges.thisYear.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',').map(Number) : [];
+
+      const metrics = await belleService.getCustomerLTVMetrics(startDate, endDate, centrosCusto);
+
+      res.json({
+        success: true,
+        data: metrics,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar métricas de LTV:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar métricas de LTV',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna analytics de vouchers
+   * GET /api/dashboard/voucher-analytics
+   */
+  async getVoucherAnalytics(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisYear.start;
+      const endDate = data_fim || dateRanges.thisYear.end;
+
+      const analytics = await belleService.getVoucherAnalytics(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: analytics,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar analytics de vouchers:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar analytics de vouchers',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna métricas de recorrência de pacientes
+   * GET /api/dashboard/recurrence-metrics
+   */
+  async getRecurrenceMetrics(req, res) {
+    try {
+      const { data_inicio, data_fim, min_interval } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisYear.start;
+      const endDate = data_fim || dateRanges.thisYear.end;
+      const minIntervalDays = parseInt(min_interval) || 30;
+
+      const metrics = await belleService.getRecurrenceMetrics(startDate, endDate, minIntervalDays);
+
+      res.json({
+        success: true,
+        data: metrics,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar métricas de recorrência:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar métricas de recorrência',
+        message: error.message,
+      });
+    }
+  },
+
   // ==================== LEAD-SALE CORRELATION ====================
 
   async getLeadSaleCorrelation(req, res) {
@@ -1387,6 +1621,289 @@ export const dashboardController = {
       res.status(500).json({
         success: false,
         error: 'Erro ao executar backfill do ano atual',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Busca estatísticas de clientes recorrentes vs novos
+   * GET /api/dashboard/return-customer-stats
+   */
+  async getReturnCustomerStats(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const stats = await dashboardDBService.getReturnCustomerStats(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: stats,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar estatísticas de clientes recorrentes:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar estatísticas de clientes recorrentes',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Busca funil de conversão com comparativo do período anterior
+   * GET /api/dashboard/funnel-comparison
+   */
+  async getFunnelComparison(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const comparison = await dashboardDBService.getFunnelComparison(startDate, endDate);
+
+      res.json({
+        success: true,
+        data: comparison,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar comparativo de funil:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar comparativo de funil',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== NOVOS INDICADORES DA APRESENTAÇÃO ====================
+
+  /**
+   * Retorna Taxa de Retenção (90 dias) e Taxa de Resgate
+   * GET /api/dashboard/retention-rescue
+   */
+  async getRetentionRescue(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await dashboardDBService.getRetentionAndRescueRates(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar retenção/resgate:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar dados de retenção/resgate',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna Faturamento por Médico
+   * GET /api/dashboard/faturamento-medico
+   */
+  async getFaturamentoMedico(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await dashboardDBService.getFaturamentoPorMedico(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar faturamento por médico:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar faturamento por médico',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna Faturamento por Serviço/Categoria
+   * GET /api/dashboard/faturamento-servico
+   */
+  async getFaturamentoServico(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await dashboardDBService.getFaturamentoPorServico(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar faturamento por serviço:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar faturamento por serviço',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna Ticket Médio Novos vs Recorrentes
+   * GET /api/dashboard/ticket-medio-tipo
+   */
+  async getTicketMedioTipo(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await dashboardDBService.getTicketMedioNovosVsRecorrentes(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar ticket médio por tipo:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar ticket médio por tipo',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna Conversão por Canal (WhatsApp vs Ligação)
+   * GET /api/dashboard/conversao-canal
+   */
+  async getConversaoCanal(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await dashboardDBService.getConversaoPorCanal(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar conversão por canal:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar conversão por canal',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna Taxa de No-Show
+   * GET /api/dashboard/no-show
+   */
+  async getNoShow(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await dashboardDBService.getTaxaNoShow(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar taxa de no-show:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar taxa de no-show',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna Taxa de Conversão de Propostas
+   * GET /api/dashboard/conversao-propostas
+   */
+  async getConversaoPropostas(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await dashboardDBService.getTaxaConversaoPropostas(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar conversão de propostas:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar conversão de propostas',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna CAC por Canal
+   * GET /api/dashboard/cac-canal
+   */
+  async getCACCanal(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      // TODO: Permitir passar investimentos via query params ou body
+      const data = await dashboardDBService.getCACPorCanal(startDate, endDate);
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar CAC por canal:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar CAC por canal',
         message: error.message,
       });
     }

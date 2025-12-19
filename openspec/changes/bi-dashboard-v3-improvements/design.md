@@ -88,12 +88,12 @@ CREATE TABLE lead_stage_history (
   to_semantics VARCHAR(20),
   transition_time TIMESTAMP WITH TIME ZONE NOT NULL,
   time_in_previous_stage_hours DECIMAL(10,2),
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-
-  INDEX idx_lead_stage_history_lead (lead_id),
-  INDEX idx_lead_stage_history_bitrix (bitrix_lead_id),
-  INDEX idx_lead_stage_history_time (transition_time)
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+CREATE INDEX idx_lead_stage_history_lead ON lead_stage_history(lead_id);
+CREATE INDEX idx_lead_stage_history_bitrix ON lead_stage_history(bitrix_lead_id);
+CREATE INDEX idx_lead_stage_history_time ON lead_stage_history(transition_time);
 ```
 
 ### 2.2 Customer Analytics Table
@@ -111,11 +111,11 @@ CREATE TABLE customer_analytics (
   valor_total_gasto DECIMAL(12,2) DEFAULT 0,
   itens_comprados JSONB,
   is_active BOOLEAN DEFAULT TRUE,
-  synced_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-
-  INDEX idx_customer_analytics_email (email),
-  INDEX idx_customer_analytics_active (is_active)
+  synced_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+CREATE INDEX idx_customer_analytics_email ON customer_analytics(email);
+CREATE INDEX idx_customer_analytics_active ON customer_analytics(is_active);
 ```
 
 ### 2.3 Marketing Spend Table
@@ -132,11 +132,11 @@ CREATE TABLE marketing_spend (
   leads_attributed INTEGER DEFAULT 0,
   currency VARCHAR(3) DEFAULT 'BRL',
   synced_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-
-  UNIQUE(source, campaign_id, date),
-  INDEX idx_marketing_spend_date (date),
-  INDEX idx_marketing_spend_source (source)
+  UNIQUE(source, campaign_id, date)
 );
+
+CREATE INDEX idx_marketing_spend_date ON marketing_spend(date);
+CREATE INDEX idx_marketing_spend_source ON marketing_spend(source);
 ```
 
 ## 3. Bitrix24 Stage History Integration
@@ -240,10 +240,18 @@ async getCustomerLifetimeValue() {
   `);
 
   const row = result.rows[0];
-  // CLV = Ticket Médio × Frequência Anual × Tempo de Vida (anos)
   const avgTicket = parseFloat(row.avg_ticket) || 0;
-  const avgVisitsPerYear = ((parseFloat(row.avg_visits) || 0) / (parseFloat(row.avg_lifespan_days) || 365)) * 365;
-  const avgLifespanYears = (parseFloat(row.avg_lifespan_days) || 365) / 365;
+  const avgVisits = parseFloat(row.avg_visits) || 0;
+  const avgLifespanDays = parseFloat(row.avg_lifespan_days);
+
+  // Guard against invalid lifespan data
+  if (!avgLifespanDays || avgLifespanDays <= 0) {
+    return { avgTicket, avgVisitsPerYear: 0, avgLifespanYears: 0, clv: 0 };
+  }
+
+  // CLV = Ticket Médio × Frequência Anual × Tempo de Vida (anos)
+  const avgVisitsPerYear = (avgVisits / avgLifespanDays) * 365;
+  const avgLifespanYears = avgLifespanDays / 365;
 
   return {
     avgTicket,
@@ -435,3 +443,43 @@ describe('Conversion Time Calculation', () => {
   });
 });
 ```
+
+## 9. UI/Design System Refresh
+
+### 9.1 Context
+The dashboards need a clearer visual hierarchy so users immediately focus on the most important numbers.
+The visual language should align with Metabase and Power BI: clean surfaces, strong typography,
+consistent grids, and restrained use of color.
+
+### 9.2 Goals / Non-Goals
+- Goals:
+  - Improve numeric focus with a primary KPI strip per page
+  - Unify cards, tables, charts, and filters under a single visual identity
+  - Keep layouts dense but scannable on desktop and mobile
+- Non-Goals:
+  - Replace Vue or the existing routing structure
+  - Introduce a new charting library during this change
+
+### 9.3 Design Decisions
+- Typography:
+  - Use a BI-friendly sans-serif with tabular numerals for KPI alignment
+  - Increase the primary KPI font size to dominate the fold
+- Color system:
+  - Neutral background (cool gray), white/near-white surfaces, single accent color
+  - Status colors reserved for deltas and alerts only
+- Layout rhythm:
+  - Page sections follow: KPI strip, analysis charts, detail tables
+  - Consistent spacing units and card padding across all dashboards
+- Attention cues:
+  - Subtle hover and focus states on KPI cards and chart series
+  - Delta chips for period-over-period change when available
+
+### 9.4 Component Targets
+- AppHeader, AppSidebar, FilterBar for global identity consistency
+- KPI blocks, chart cards, and tables for consistent hierarchy
+- Tooltip and legend styling for chart readability
+
+### 9.5 Accessibility and Quality
+- Maintain WCAG AA contrast for text on surfaces
+- Use color plus iconography or text for state (no color-only meaning)
+- Verify light and dark theme parity

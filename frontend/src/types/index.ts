@@ -488,3 +488,231 @@ export interface ChurnRiskLevel {
 }
 
 export type ChurnRiskSummaryResponse = ChurnRiskLevel[];
+
+// Conversion Time Metrics (Phase 2)
+export interface ConversionTimeDistribution {
+  range: string;
+  count: number;
+}
+
+export interface ConversionTimeByStage {
+  stage: string;
+  avgDays: number;
+  count: number;
+}
+
+export interface ConversionTimeMetrics {
+  avgConversionDays: number;
+  avgInProgressDays: number;
+  avgTimeByStage: ConversionTimeByStage[];
+  conversionTimeDistribution: ConversionTimeDistribution[];
+  totalConverted: number;
+  totalInProgress: number;
+}
+
+// Customer LTV Metrics (Phase 3)
+export interface LTVDistribution {
+  range: string;
+  count: number;
+}
+
+export interface TopCustomerLTV {
+  clienteId: number;
+  clienteNome: string;
+  ltv: number;
+  totalCompras: number;
+  ticketMedio: number;
+  diasComoCliente: number;
+}
+
+export interface CustomerLTVMetrics {
+  avgLTV: number;
+  avgPurchases: number;
+  avgTicket: number;
+  retentionRate: number;
+  churnRate: number;
+  newCustomers: number;
+  returningCustomers: number;
+  totalCustomers: number;
+  ltvDistribution: LTVDistribution[];
+  topCustomers: TopCustomerLTV[];
+}
+
+// Voucher Analytics (Phase 3)
+export interface VoucherByMonth {
+  mes: string;
+  quantidade: number;
+  valor: number;
+}
+
+export interface VoucherAnalytics {
+  totalVendido: number;
+  quantidadeVendida: number;
+  ticketMedio: number;
+  vouchersPorMes: VoucherByMonth[];
+}
+
+// Recurrence Metrics (Phase 3)
+export interface RecurrenceMetrics {
+  taxaRecorrencia: number;
+  intervaloMedioDias: number;
+  clientesRecorrentes: number;
+  clientesUnicos: number;
+  totalClientes: number;
+}
+
+// Marketing ROAS Metrics (Phase 4)
+export interface ROASBySource {
+  source: string;
+  sourceName: string;
+  totalLeads: number;
+  convertedLeads: number;
+  revenue: number;
+  conversionRate: number;
+  cpl: number | null;
+  cpa: number | null;
+  roas: number | null;
+}
+
+export interface MarketingROASMetrics {
+  bySource: ROASBySource[];
+  totals: {
+    totalLeads: number;
+    convertedLeads: number;
+    totalRevenue: number;
+    adSpend: number;
+    overallConversionRate: number;
+    overallCPL: number | null;
+    overallCPA: number | null;
+    overallROAS: number | null;
+  };
+}
+
+// Advanced Funnel (Phase 4)
+export interface AdvancedFunnelStage {
+  stage: string;
+  stageId: string;
+  semantic: string;
+  count: number;
+  percentage: number;
+  avgDaysInStage: number;
+  dropOffRate: number;
+  dropOffFromPrevious: number;
+}
+
+export interface AdvancedFunnel {
+  stages: AdvancedFunnelStage[];
+  totalLeads: number;
+  totalConverted: number;
+  overallConversionRate: number;
+}
+
+// Campaign Attribution (Phase 4)
+export interface CampaignAttributionItem {
+  campaign: string;
+  campaignName: string;
+  totalLeads: number;
+  convertedLeads: number;
+  conversionRate: number;
+  revenue: number;
+}
+
+export interface CampaignAttribution {
+  byCampaign: CampaignAttributionItem[];
+  totalLeads: number;
+  totalConverted: number;
+}
+
+// ==================== NOVOS INDICADORES DA APRESENTAÇÃO ====================
+
+// Taxa de Retenção e Resgate
+export interface RetentionInfo {
+  totalAtendidos: number;
+  retornaram90Dias: number;
+  taxa: number;
+  label: string;
+}
+
+export interface RescueInfo {
+  totalContactados: number;
+  reativados: number;
+  taxa: number;
+  valorPotencial: number;
+  valorResgatado: number;
+  label: string;
+}
+
+export interface RetentionRescueData {
+  retencao: RetentionInfo;
+  resgate: RescueInfo;
+}
+
+// Faturamento por Médico
+export interface FaturamentoMedico {
+  medico: string;
+  codprofissional: string;
+  totalAtendimentos: number;
+  faturamento: number;
+  ticketMedio: number;
+}
+
+// Faturamento por Serviço/Categoria
+export interface FaturamentoServico {
+  categoria: string;
+  quantidade: number;
+  faturamento: number;
+}
+
+// Ticket Médio Novos vs Recorrentes
+export interface TicketMedioTipoCliente {
+  totalVendas: number;
+  totalClientes: number;
+  faturamento: number;
+  ticketMedio: number;
+}
+
+export interface TicketMedioTipoData {
+  novos: TicketMedioTipoCliente;
+  recorrentes: TicketMedioTipoCliente;
+}
+
+// Conversão por Canal
+export interface ConversaoCanal {
+  canal: string;
+  totalMensagens: number;
+  agendamentos: number;
+  taxaConversao: number;
+}
+
+// Taxa de No-Show
+export interface NoShowImpacto {
+  agendaFalsa: number;
+  medicoOcioso: number;
+  faturamentoPerdido: number;
+}
+
+export interface NoShowData {
+  totalAgendados: number;
+  compareceram: number;
+  faltas: number;
+  taxaNoShow: number;
+  impacto: NoShowImpacto;
+}
+
+// Taxa de Conversão de Propostas
+export interface ConversaoPropostasData {
+  totalPropostas: number;
+  propostasFechadas: number;
+  taxaConversao: number;
+  valorPrescrito: number;
+  valorVendido: number;
+  taxaConversaoValor: number;
+}
+
+// CAC por Canal
+export interface CACCanal {
+  canal: string;
+  investimento: number;
+  novosPacientes: number;
+  cac: number;
+}

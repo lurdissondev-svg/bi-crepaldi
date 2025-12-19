@@ -3,8 +3,23 @@
 @tailwind utilities;
 
 /* ===== CSS VARIABLES FOR THEMING ===== */
+/*
+  Design System: Metabase + Power BI Inspired
+
+  PALETTE OVERVIEW:
+  - Neutral: Cool gray scale (Slate) for backgrounds, borders, text
+  - Accent: Indigo - single brand color for interactive elements
+  - Status: Semantic colors for data states
+    - Success (Green): Positive values, growth, completed
+    - Warning (Amber): Caution, medium priority, pending
+    - Danger (Red): Negative values, decline, errors
+    - Info (Blue): Neutral information, links, secondary actions
+*/
+
 :root {
   /* Light theme (default) */
+
+  /* Backgrounds - Cool gray scale for clean BI appearance */
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f8fafc;
   --color-bg-tertiary: #f1f5f9;
@@ -12,27 +27,33 @@
   --color-bg-hover: #f1f5f9;
   --color-bg-active: #e2e8f0;
 
+  /* Borders - Subtle separation */
   --color-border-primary: #e2e8f0;
   --color-border-secondary: #cbd5e1;
   --color-border-subtle: #f1f5f9;
 
+  /* Text - High contrast for readability */
   --color-text-primary: #0f172a;
   --color-text-secondary: #475569;
   --color-text-tertiary: #64748b;
   --color-text-muted: #94a3b8;
   --color-text-inverted: #ffffff;
 
+  /* Accent - Primary brand color (Indigo) */
   --color-accent: #6366f1;
   --color-accent-hover: #4f46e5;
   --color-accent-light: #eef2ff;
   --color-accent-muted: #a5b4fc;
 
+  /* Status Colors */
   --color-success: #10b981;
   --color-success-light: #ecfdf5;
   --color-warning: #f59e0b;
   --color-warning-light: #fffbeb;
   --color-danger: #ef4444;
   --color-danger-light: #fef2f2;
+  --color-info: #3b82f6;
+  --color-info-light: #eff6ff;
 
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
@@ -75,6 +96,8 @@
   --color-warning-light: rgba(251, 191, 36, 0.1);
   --color-danger: #f87171;
   --color-danger-light: rgba(248, 113, 113, 0.1);
+  --color-info: #60a5fa;
+  --color-info-light: rgba(96, 165, 250, 0.1);
 
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.3);
@@ -90,8 +113,14 @@
 
   html {
     @apply antialiased;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
     text-rendering: optimizeLegibility;
+  }
+
+  /* Tabular numerals for KPI alignment - ensures numbers align vertically */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
   }
 
   body {
@@ -163,6 +192,7 @@
   .stat-value {
     color: var(--color-text-primary);
     @apply text-3xl font-bold tracking-tight;
+    font-variant-numeric: tabular-nums;
   }
 
   .stat-label {
@@ -178,6 +208,109 @@
   .stat-change-negative {
     color: var(--color-danger);
     @apply text-sm font-medium flex items-center gap-1;
+  }
+
+  /* ===== KPI STRIP - Primary Metrics Pattern ===== */
+  .kpi-strip {
+    @apply flex flex-wrap gap-4 lg:gap-6;
+  }
+
+  .kpi-strip-item {
+    @apply flex-1 min-w-0;
+  }
+
+  /* Primary KPI - Large, dominant value */
+  .kpi-primary {
+    background-color: var(--color-bg-elevated);
+    border: 1px solid var(--color-border-primary);
+    @apply rounded-xl p-6 transition-all duration-200;
+  }
+
+  .kpi-primary:hover {
+    border-color: var(--color-border-secondary);
+    box-shadow: var(--shadow-md);
+  }
+
+  .kpi-primary-label {
+    color: var(--color-text-muted);
+    @apply text-sm font-medium uppercase tracking-wide mb-2;
+  }
+
+  .kpi-primary-value {
+    color: var(--color-text-primary);
+    @apply text-4xl lg:text-5xl font-bold tracking-tight leading-none;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .kpi-primary-subtitle {
+    color: var(--color-text-tertiary);
+    @apply text-sm mt-2;
+  }
+
+  /* Secondary KPI - Smaller, supporting metrics */
+  .kpi-secondary {
+    background-color: var(--color-bg-elevated);
+    border: 1px solid var(--color-border-primary);
+    @apply rounded-xl p-4 transition-all duration-200;
+  }
+
+  .kpi-secondary:hover {
+    border-color: var(--color-border-secondary);
+  }
+
+  .kpi-secondary-label {
+    color: var(--color-text-muted);
+    @apply text-xs font-medium uppercase tracking-wide mb-1;
+  }
+
+  .kpi-secondary-value {
+    color: var(--color-text-primary);
+    @apply text-2xl font-bold tracking-tight;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Delta Chip - Period-over-period change indicator */
+  .delta-chip {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .delta-chip-positive {
+    background-color: var(--color-success-light);
+    color: var(--color-success);
+  }
+
+  .delta-chip-negative {
+    background-color: var(--color-danger-light);
+    color: var(--color-danger);
+  }
+
+  .delta-chip-neutral {
+    background-color: var(--color-bg-tertiary);
+    color: var(--color-text-muted);
+  }
+
+  .delta-chip-info {
+    background-color: var(--color-info-light);
+    color: var(--color-info);
+  }
+
+  /* Section Header Pattern */
+  .section-header {
+    @apply flex items-center justify-between mb-4;
+  }
+
+  .section-header-title {
+    color: var(--color-text-primary);
+    @apply text-lg font-semibold;
+  }
+
+  .section-header-subtitle {
+    color: var(--color-text-muted);
+    @apply text-sm mt-0.5;
+  }
+
+  .section-header-actions {
+    @apply flex items-center gap-2;
   }
 
   /* Buttons */
@@ -253,12 +386,18 @@
   /* Tables */
   .table-header {
     color: var(--color-text-muted);
-    @apply text-xs font-medium uppercase tracking-wider;
+    @apply text-xs font-semibold uppercase tracking-wider;
   }
 
   .table-cell {
-    color: var(--color-text-primary);
+    color: var(--color-text-secondary);
     @apply py-3 text-sm;
+  }
+
+  .table-cell-emphasis {
+    color: var(--color-text-primary);
+    @apply font-semibold;
+    font-variant-numeric: tabular-nums;
   }
 
   .table-row {
@@ -267,6 +406,45 @@
   }
 
   .table-row:hover {
+    background-color: var(--color-bg-hover);
+  }
+
+  /* Table container with sticky header support */
+  .table-container {
+    @apply overflow-auto;
+  }
+
+  .table-container-scrollable {
+    max-height: 400px;
+    @apply overflow-y-auto;
+  }
+
+  .table-sticky-header thead {
+    @apply sticky top-0 z-10;
+  }
+
+  .table-sticky-header th {
+    background-color: var(--color-bg-elevated);
+    box-shadow: 0 1px 0 var(--color-border-subtle);
+  }
+
+  /* Table density variants */
+  .table-compact td,
+  .table-compact th {
+    @apply px-3 py-2;
+  }
+
+  .table-comfortable td,
+  .table-comfortable th {
+    @apply px-5 py-4;
+  }
+
+  /* Zebra striping */
+  .table-striped tbody tr:nth-child(even) {
+    background-color: var(--color-bg-tertiary);
+  }
+
+  .table-striped tbody tr:nth-child(even):hover {
     background-color: var(--color-bg-hover);
   }
 
@@ -326,6 +504,11 @@
   .badge-neutral {
     background-color: var(--color-bg-tertiary);
     color: var(--color-text-secondary);
+  }
+
+  .badge-info {
+    background-color: var(--color-info-light);
+    color: var(--color-info);
   }
 
   /* Input Fields */
@@ -450,6 +633,7 @@
   .text-success { color: var(--color-success); }
   .text-warning { color: var(--color-warning); }
   .text-danger { color: var(--color-danger); }
+  .text-info { color: var(--color-info); }
 
   /* Background colors */
   .bg-primary { background-color: var(--color-bg-primary); }
@@ -482,7 +666,122 @@
   }
 }
 
-/* ===== RECHARTS CUSTOMIZATION ===== */
+/* ===== APEXCHARTS CUSTOMIZATION ===== */
+.apexcharts-canvas {
+  background: transparent !important;
+}
+
+.apexcharts-text {
+  font-family: inherit !important;
+}
+
+.apexcharts-xaxis-label,
+.apexcharts-yaxis-label {
+  fill: var(--color-text-muted) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.apexcharts-gridline {
+  stroke: var(--color-border-subtle) !important;
+}
+
+.apexcharts-legend-text {
+  color: var(--color-text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+.apexcharts-legend-marker {
+  border-radius: 3px !important;
+}
+
+.apexcharts-tooltip {
+  background-color: var(--color-bg-elevated) !important;
+  border: 1px solid var(--color-border-primary) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+.apexcharts-tooltip-title {
+  background-color: var(--color-bg-tertiary) !important;
+  border-bottom: 1px solid var(--color-border-subtle) !important;
+  color: var(--color-text-primary) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  padding: 8px 12px !important;
+}
+
+.apexcharts-tooltip-text {
+  color: var(--color-text-secondary) !important;
+  font-size: 12px !important;
+}
+
+.apexcharts-tooltip-text-y-value {
+  color: var(--color-text-primary) !important;
+  font-weight: 600 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+.apexcharts-tooltip-marker {
+  border-radius: 3px !important;
+}
+
+.apexcharts-datalabel {
+  font-weight: 500 !important;
+  font-size: 11px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+.apexcharts-pie-label {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  fill: white !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Primary series emphasis - larger markers and bolder labels */
+.apexcharts-series[seriesName="primary"] .apexcharts-marker {
+  r: 5 !important;
+}
+
+.apexcharts-series:first-child .apexcharts-datalabel {
+  font-weight: 600 !important;
+  font-size: 12px !important;
+}
+
+/* Highlight effect on hover */
+.apexcharts-bar-area:hover,
+.apexcharts-area:hover {
+  filter: brightness(1.1);
+}
+
+/* Data label background for better visibility */
+.apexcharts-datalabel-label {
+  font-weight: 500 !important;
+}
+
+.apexcharts-datalabel-value {
+  font-weight: 700 !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+/* Chart card header styling */
+.chart-card-header {
+  @apply flex items-center justify-between mb-4;
+}
+
+.chart-card-title {
+  color: var(--color-text-secondary);
+  @apply text-sm font-semibold uppercase tracking-wide;
+}
+
+.chart-card-subtitle {
+  color: var(--color-text-muted);
+  @apply text-xs mt-1;
+}
+
+/* ===== RECHARTS CUSTOMIZATION (Legacy) ===== */
 .recharts-cartesian-axis-tick-value {
   fill: var(--color-text-muted);
   font-size: 12px;

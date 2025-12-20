@@ -6,6 +6,7 @@ import authRoutes from './auth.routes.js';
 import usersRoutes from './users.routes.js';
 import rolesRoutes from './roles.routes.js';
 import businessDaysRoutes from './businessDays.routes.js';
+import enrichmentRoutes from './enrichment.routes.js';
 import bitrix24Service from '../services/bitrix24.service.js';
 import belleService from '../services/belle.service.js';
 import { metaAdsService } from '../services/meta.service.js';
@@ -162,5 +163,8 @@ router.use('/meta', metaRoutes);
 
 // Webhook routes (Tintim e outras integrações)
 router.use('/webhooks', webhookRoutes);
+
+// Customer Enrichment routes (admin)
+router.use('/admin', enrichmentRoutes);
 
 export default router;

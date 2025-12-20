@@ -66,6 +66,15 @@ const segmentColors: Record<string, string> = {
 // Colunas para tabela de faturamento por paciente
 const faturamentoColumns = [
   { key: 'cliente', header: 'Cliente' },
+  {
+    key: 'celular',
+    header: 'Contato',
+    render: (_: unknown, row: { telefone?: string; celular?: string }) => {
+      if (row.celular && row.celular.trim()) return row.celular
+      if (row.telefone && row.telefone.trim()) return row.telefone
+      return '-'
+    }
+  },
   { key: 'quantidadeVendas', header: 'Vendas' },
   { key: 'investimento', header: 'Investimento', render: (val: number) => formatCurrency(val) },
 ]
@@ -73,6 +82,15 @@ const faturamentoColumns = [
 // Colunas para tabelas de potenciais
 const potenciaisColumns = [
   { key: 'cliente', header: 'Cliente' },
+  {
+    key: 'celular',
+    header: 'Contato',
+    render: (_: unknown, row: { telefone?: string; celular?: string }) => {
+      if (row.celular && row.celular.trim()) return row.celular
+      if (row.telefone && row.telefone.trim()) return row.telefone
+      return '-'
+    }
+  },
   { key: 'diasSemVir', header: 'Dias sem vir' },
   { key: 'investimento', header: 'Investimento', render: (val: number) => formatCurrency(val) },
 ]

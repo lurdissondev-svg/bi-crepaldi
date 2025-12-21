@@ -49,6 +49,20 @@ router.get('/no-show', cacheMiddleware(cacheKey), dashboardController.getNoShow)
 router.get('/conversao-propostas', cacheMiddleware(cacheKey), dashboardController.getConversaoPropostas);
 router.get('/cac-canal', cacheMiddleware(cacheKey), dashboardController.getCACCanal);
 
+// Indicadores 8Ps (Metodologia Conrado Adolpho)
+router.get('/8ps', cacheMiddleware(cacheKey), dashboardController.get8Ps);
+router.get('/8ps/avancado', cacheMiddleware(cacheKey), dashboardController.get8PsAvancado);
+router.get('/8ps/campanhas', cacheMiddleware(cacheKey), dashboardController.get8PsCampanhas);
+router.get('/8ps/gargalos', cacheMiddleware(cacheKey), dashboardController.get8PsGargalos);
+router.get('/8ps/publicos', cacheMiddleware(cacheKey), dashboardController.get8PsPublicos);
+router.get('/8ps/alertas', cacheMiddleware(cacheKey), dashboardController.get8PsAlertas);
+router.get('/8ps/saude', cacheMiddleware(cacheKey), dashboardController.get8PsSaude);
+router.get('/8ps/metas', cacheMiddleware(cacheKey), dashboardController.get8PsMetas);
+
+// Métricas Avançadas de Pacientes (enriquecimento Belle Software)
+router.get('/pacientes/avancado', cacheMiddleware(cacheKey), dashboardController.getPacientesAvancado);
+router.get('/pacientes/atividade', cacheMiddleware(cacheKey), dashboardController.getPacientesAtividade);
+
 // Opções de filtro
 router.get('/filtros', cacheMiddleware(cacheKey), dashboardController.getFilterOptions);
 

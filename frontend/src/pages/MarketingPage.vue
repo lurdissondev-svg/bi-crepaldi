@@ -11,7 +11,7 @@ import RevalidatingIndicator from '@/components/ui/RevalidatingIndicator.vue'
 import PageSkeleton from '@/components/ui/PageSkeleton.vue'
 import KPIStrip, { type KPIItem } from '@/components/charts/KPIStrip.vue'
 import SectionHeader from '@/components/ui/SectionHeader.vue'
-import { Users, UserCheck, UserX, Target, Clock, TrendingUp, DollarSign, Percent, Wallet } from 'lucide-vue-next'
+import { Users, UserCheck, UserX, Target, Clock, TrendingUp, DollarSign, Percent, Wallet, AlertTriangle, CheckCircle, XCircle, Activity, Zap } from 'lucide-vue-next'
 import { formatCurrency } from '@/utils/format'
 import { api } from '@/services/api'
 import type { CACCanal } from '@/types'
@@ -105,6 +105,124 @@ const funnelLoading = ref(false)
 const cacCanal = ref<CACCanal[]>([])
 const cacLoading = ref(false)
 
+// 8Ps Saúde e Alertas
+interface Alerta8Ps {
+  indicador: string
+  nome: string
+  descricao: string
+  valorAtual: number
+  valorFormatado: string
+  metaFormatada: string
+  status: 'critico' | 'atencao' | 'ok'
+  severidade: number
+  acao: string
+  departamento: 'FIN' | 'MKT' | 'COM1' | 'COM2'
+  unidade: string
+}
+
+interface Saude8Ps {
+  saudeGeral: 'verde' | 'amarelo' | 'vermelho' | 'sem_dados'
+  saudePorDepartamento: Record<string, 'verde' | 'amarelo' | 'vermelho'>
+  alertasPrioritarios: Array<{
+    indicador: string
+    departamento: string
+    status: string
+    valorAtual: string
+    meta: string
+    acao: string
+  }>
+  totalAlertas: number
+  periodo: { inicio: string; fim: string }
+}
+
+interface Indicadores8Ps {
+  financeiro: {
+    faturamento: number
+    investimento: number
+    lucro: number
+    roas: number
+    margemLucro: number
+  }
+  marketing: {
+    publicoAlcancado: number
+    cliques: number
+    leads: number
+    leadsQualificados: number
+    tx1: number
+    ctr: number
+    cpl: number
+    taxaQualificacao: number
+  }
+  comercial1: {
+    leads: number
+    agendamentos: number
+    atendimentos: number
+    vendas: number
+    faturamentoNovos: number
+    ticketMedio: number
+    cac: number
+    tx2: number
+    taxaComparecimento: number
+    taxaFechamento: number
+  }
+  comercial2: {
+    clientesAtivos: number
+    clientesRecorrentes: number
+    taxaRecompra: number
+    ltv: number
+    relacaoLtvCac: number
+    churn: number
+    ticketMedioRecorrente: number
+    faturamentoRecorrente: number
+  }
+  metas: Record<string, any>
+}
+
+const saude8Ps = ref<Saude8Ps | null>(null)
+const alertas8Ps = ref<Alerta8Ps[]>([])
+const indicadores8Ps = ref<Indicadores8Ps | null>(null)
+const loading8Ps = ref(false)
+
+async function fetch8PsData() {
+  loading8Ps.value = true
+  try {
+    const [saudeRes, alertasRes, indicadoresRes] = await Promise.all([
+      api.get<{ success: boolean; data: Saude8Ps }>('/dashboard/8ps/saude', {
+        params: {
+          data_inicio: filters.value.dataInicio,
+          data_fim: filters.value.dataFim,
+        },
+      }),
+      api.get<{ success: boolean; data: { alertas: Alerta8Ps[] } }>('/dashboard/8ps/alertas', {
+        params: {
+          data_inicio: filters.value.dataInicio,
+          data_fim: filters.value.dataFim,
+        },
+      }),
+      api.get<{ success: boolean; data: Indicadores8Ps }>('/dashboard/8ps', {
+        params: {
+          data_inicio: filters.value.dataInicio,
+          data_fim: filters.value.dataFim,
+        },
+      }),
+    ])
+
+    if (saudeRes.data.success) {
+      saude8Ps.value = saudeRes.data.data
+    }
+    if (alertasRes.data.success) {
+      alertas8Ps.value = alertasRes.data.data.alertas || []
+    }
+    if (indicadoresRes.data.success) {
+      indicadores8Ps.value = indicadoresRes.data.data
+    }
+  } catch (error) {
+    console.error('Erro ao buscar dados 8Ps:', error)
+  } finally {
+    loading8Ps.value = false
+  }
+}
+
 async function fetchCACCanal() {
   cacLoading.value = true
   try {
@@ -148,6 +266,7 @@ onMounted(() => {
   fetchROASMetrics()
   fetchFunnelComparison()
   fetchCACCanal()
+  fetch8PsData()
 })
 
 // Tab para análise UTM
@@ -565,10 +684,48 @@ const cacTableData = computed(() => {
 function handleFilterChange(newFilters: typeof filters.value) {
   store.setFilters(newFilters)
   store.refetch()
-  // Também atualizar métricas ROAS, funil e CAC com os novos filtros
+  // Também atualizar métricas ROAS, funil, CAC e 8Ps com os novos filtros
   fetchROASMetrics()
   fetchFunnelComparison()
   fetchCACCanal()
+  fetch8PsData()
+}
+
+// Helpers para cores de status 8Ps
+const getSaudeColor = (saude: string) => {
+  switch (saude) {
+    case 'verde': return 'text-green-500'
+    case 'amarelo': return 'text-yellow-500'
+    case 'vermelho': return 'text-red-500'
+    default: return 'text-gray-400'
+  }
+}
+
+const getSaudeBgColor = (saude: string) => {
+  switch (saude) {
+    case 'verde': return 'bg-green-500/20'
+    case 'amarelo': return 'bg-yellow-500/20'
+    case 'vermelho': return 'bg-red-500/20'
+    default: return 'bg-gray-500/20'
+  }
+}
+
+const getAlertaStatusColor = (status: string) => {
+  switch (status) {
+    case 'critico': return 'bg-red-500/20 text-red-500 border-red-500/30'
+    case 'atencao': return 'bg-yellow-500/20 text-yellow-500 border-yellow-500/30'
+    default: return 'bg-green-500/20 text-green-500 border-green-500/30'
+  }
+}
+
+const getDepartamentoLabel = (dept: string) => {
+  switch (dept) {
+    case 'FIN': return 'Financeiro'
+    case 'MKT': return 'Marketing'
+    case 'COM1': return 'Comercial 1'
+    case 'COM2': return 'Comercial 2'
+    default: return dept
+  }
 }
 </script>
 
@@ -607,6 +764,192 @@ function handleFilterChange(newFilters: typeof filters.value) {
         :primary-count="3"
         layout="grid"
       />
+
+      <!-- Painel de Saúde 8Ps e Alertas -->
+      <div v-if="saude8Ps || alertas8Ps.length > 0" class="card p-6">
+        <div class="flex items-center justify-between mb-6">
+          <div class="flex items-center gap-3">
+            <div :class="['p-2 rounded-lg', getSaudeBgColor(saude8Ps?.saudeGeral || 'sem_dados')]">
+              <Activity :class="['w-5 h-5', getSaudeColor(saude8Ps?.saudeGeral || 'sem_dados')]" />
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold text-[var(--color-text-primary)]">
+                Saúde do Marketing (8Ps)
+              </h3>
+              <p class="text-sm text-[var(--color-text-muted)]">
+                Monitoramento automático baseado na metodologia 8Ps
+              </p>
+            </div>
+          </div>
+
+          <!-- Indicador de saúde geral -->
+          <div v-if="saude8Ps" class="flex items-center gap-4">
+            <div class="text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">Saúde Geral</p>
+              <div :class="['flex items-center gap-2 px-3 py-1 rounded-full', getSaudeBgColor(saude8Ps.saudeGeral)]">
+                <CheckCircle v-if="saude8Ps.saudeGeral === 'verde'" class="w-4 h-4 text-green-500" />
+                <AlertTriangle v-else-if="saude8Ps.saudeGeral === 'amarelo'" class="w-4 h-4 text-yellow-500" />
+                <XCircle v-else-if="saude8Ps.saudeGeral === 'vermelho'" class="w-4 h-4 text-red-500" />
+                <span :class="['text-sm font-medium capitalize', getSaudeColor(saude8Ps.saudeGeral)]">
+                  {{ saude8Ps.saudeGeral === 'verde' ? 'Saudável' : saude8Ps.saudeGeral === 'amarelo' ? 'Atenção' : saude8Ps.saudeGeral === 'vermelho' ? 'Crítico' : 'Sem dados' }}
+                </span>
+              </div>
+            </div>
+            <div v-if="saude8Ps.totalAlertas > 0" class="text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">Alertas</p>
+              <span class="text-xl font-bold text-[var(--color-danger)]">{{ saude8Ps.totalAlertas }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Saúde por Departamento -->
+        <div v-if="saude8Ps?.saudePorDepartamento" class="grid grid-cols-4 gap-4 mb-6">
+          <div
+            v-for="(saude, dept) in saude8Ps.saudePorDepartamento"
+            :key="dept"
+            :class="['p-4 rounded-lg border', getSaudeBgColor(saude), 'border-[var(--color-border-subtle)]']"
+          >
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-medium text-[var(--color-text-primary)]">{{ getDepartamentoLabel(dept) }}</span>
+              <CheckCircle v-if="saude === 'verde'" class="w-4 h-4 text-green-500" />
+              <AlertTriangle v-else-if="saude === 'amarelo'" class="w-4 h-4 text-yellow-500" />
+              <XCircle v-else class="w-4 h-4 text-red-500" />
+            </div>
+            <p :class="['text-xs capitalize', getSaudeColor(saude)]">
+              {{ saude === 'verde' ? 'OK' : saude === 'amarelo' ? 'Atenção' : 'Crítico' }}
+            </p>
+          </div>
+        </div>
+
+        <!-- Alertas Prioritários -->
+        <div v-if="alertas8Ps.length > 0">
+          <div class="flex items-center gap-2 mb-4">
+            <Zap class="w-4 h-4 text-[var(--color-warning)]" />
+            <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">
+              Alertas e Ações Recomendadas
+            </h4>
+          </div>
+
+          <div class="space-y-3">
+            <div
+              v-for="(alerta, index) in alertas8Ps.slice(0, 5)"
+              :key="index"
+              :class="['p-4 rounded-lg border', getAlertaStatusColor(alerta.status)]"
+            >
+              <div class="flex items-start justify-between gap-4">
+                <div class="flex-1">
+                  <div class="flex items-center gap-2 mb-1">
+                    <AlertTriangle v-if="alerta.status === 'critico'" class="w-4 h-4" />
+                    <AlertTriangle v-else class="w-4 h-4" />
+                    <span class="font-medium">{{ alerta.nome }}</span>
+                    <span class="text-xs px-2 py-0.5 rounded bg-[var(--color-bg-tertiary)]">
+                      {{ getDepartamentoLabel(alerta.departamento) }}
+                    </span>
+                  </div>
+                  <p class="text-xs text-[var(--color-text-muted)] mb-2">{{ alerta.descricao }}</p>
+                  <div class="flex items-center gap-4 text-sm">
+                    <span>
+                      Atual: <strong>{{ alerta.valorFormatado }}</strong>
+                    </span>
+                    <span class="text-[var(--color-text-muted)]">|</span>
+                    <span>
+                      Meta: <strong>{{ alerta.metaFormatada }}</strong>
+                    </span>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <span :class="['px-2 py-1 rounded text-xs font-medium uppercase', alerta.status === 'critico' ? 'bg-red-500/30 text-red-400' : 'bg-yellow-500/30 text-yellow-400']">
+                    {{ alerta.status === 'critico' ? 'Crítico' : 'Atenção' }}
+                  </span>
+                </div>
+              </div>
+              <div class="mt-3 p-2 bg-[var(--color-bg-tertiary)] rounded text-xs">
+                <strong class="text-[var(--color-accent)]">Ação sugerida:</strong>
+                <span class="text-[var(--color-text-secondary)]"> {{ alerta.acao }}</span>
+              </div>
+            </div>
+
+            <div v-if="alertas8Ps.length > 5" class="text-center py-2">
+              <span class="text-sm text-[var(--color-text-muted)]">
+                + {{ alertas8Ps.length - 5 }} alertas adicionais
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Indicadores 8Ps Resumidos -->
+        <div v-if="indicadores8Ps" class="mt-6 pt-6 border-t border-[var(--color-border-subtle)]">
+          <h4 class="text-sm font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide mb-4">
+            Indicadores Chave 8Ps
+          </h4>
+          <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+            <!-- TX1 -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">TX1</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ (indicadores8Ps.marketing?.tx1 || 0).toFixed(1) }}%
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Clique→Lead</p>
+            </div>
+            <!-- TX2 -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">TX2</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ (indicadores8Ps.comercial1?.tx2 || 0).toFixed(1) }}%
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Lead→Venda</p>
+            </div>
+            <!-- CPL -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">CPL</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ formatCurrency(indicadores8Ps.marketing?.cpl || 0) }}
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Custo/Lead</p>
+            </div>
+            <!-- CAC -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">CAC</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ formatCurrency(indicadores8Ps.comercial1?.cac || 0) }}
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Custo/Cliente</p>
+            </div>
+            <!-- ROAS -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">ROAS</p>
+              <p :class="['text-lg font-bold', (indicadores8Ps.financeiro?.roas || 0) >= 1 ? 'text-green-500' : 'text-red-500']">
+                {{ (indicadores8Ps.financeiro?.roas || 0).toFixed(2) }}x
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Retorno</p>
+            </div>
+            <!-- LTV:CAC -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">LTV:CAC</p>
+              <p :class="['text-lg font-bold', (indicadores8Ps.comercial2?.relacaoLtvCac || 0) >= 3 ? 'text-green-500' : 'text-yellow-500']">
+                {{ (indicadores8Ps.comercial2?.relacaoLtvCac || 0).toFixed(1) }}:1
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Valor/Custo</p>
+            </div>
+            <!-- Taxa Recompra -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">Recompra</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ (indicadores8Ps.comercial2?.taxaRecompra || 0).toFixed(1) }}%
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Recorrência</p>
+            </div>
+            <!-- Ticket Médio -->
+            <div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg text-center">
+              <p class="text-xs text-[var(--color-text-muted)] mb-1">Ticket</p>
+              <p class="text-lg font-bold text-[var(--color-text-primary)]">
+                {{ formatCurrency(indicadores8Ps.comercial1?.ticketMedio || 0) }}
+              </p>
+              <p class="text-xs text-[var(--color-text-muted)]">Médio</p>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Gráficos: Horário e Origem -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">

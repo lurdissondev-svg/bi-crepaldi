@@ -771,8 +771,15 @@ class BelleService {
   /**
    * Busca movimentação detalhada (serviços, produtos, etc)
    * Este endpoint tem o campo 'responsavel' que permite filtrar por profissional
+   * @param {number} codEstab - Código do estabelecimento
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @param {Object} options - Opções de filtro
+   * @param {boolean} options.incluirPlanos - Se deve incluir planos (default: true)
    */
-  async getMovimentacaoDetalhado(codEstab, dataInicio, dataFim) {
+  async getMovimentacaoDetalhado(codEstab, dataInicio, dataFim, options = {}) {
+    const { incluirPlanos = true } = options;
+
     try {
       const dtInicio = this.formatDateBelle(dataInicio);
       const dtFim = this.formatDateBelle(dataFim);
@@ -786,7 +793,7 @@ class BelleService {
         situacao: 'Confirmado', // Parâmetro obrigatório
         // Filtros de origem - especifica quais tipos de movimentação incluir
         origemServico: 1, // Serviços
-        origemPlano: 1, // Planos (inclui consultas e avaliações)
+        origemPlano: incluirPlanos ? 1 : 0, // Planos (desativado para profissionais, pois já vem de venda_planos)
         origemProduto: 1, // Produtos
         origemCRE: 1, // Contas a receber
         origemOutrasVendas: 1, // Outras vendas
@@ -1353,8 +1360,11 @@ class BelleService {
 
     for (const codEstab of this.estabelecimentos) {
       for (const chunk of chunks) {
+        // Para profissionais: NÃO incluir planos aqui (origemPlano: 0)
+        // Planos já são capturados via venda_planos com campo 'indicacao'
+        // Isso evita pegar vendedores comerciais no lugar de médicos/esteticistas
         movimentacaoPromises.push(
-          this.getMovimentacaoDetalhado(codEstab, chunk.inicio, chunk.fim)
+          this.getMovimentacaoDetalhado(codEstab, chunk.inicio, chunk.fim, { incluirPlanos: false })
             .catch(err => {
               logger.warn(`[Belle] Erro movimentacao_detalhado estab ${codEstab}:`, err.message);
               return [];
@@ -1901,6 +1911,320 @@ class BelleService {
       intervaloMedioDias: Math.round(intervaloMedio),
       minIntervalDays,
     };
+  }
+
+  // ==================== RELATÓRIOS DE ATIVIDADE DE CLIENTES ====================
+
+  /**
+   * Busca atividade de clientes ativos
+   * Endpoint: /relatorios/atividade_clientes
+   *
+   * @param {number} codEstab - Código do estabelecimento
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @returns {Array} Lista de clientes ativos com atividade
+   */
+  async getAtividadeClientesAtivos(codEstab, dataInicio, dataFim) {
+    try {
+      const dtInicio = this.formatDateBelle(dataInicio);
+      const dtFim = this.formatDateBelle(dataFim);
+
+      const data = await this.cachedRequest('/relatorios/atividade_clientes', {
+        codEstab,
+        dtInicio,
+        dtFim,
+      });
+      return data || [];
+    } catch (error) {
+      logger.error(`Erro ao buscar atividade clientes ativos (estab ${codEstab}):`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca atividade de clientes inativos
+   * Endpoint: /relatorios/atividade_clientes_inativos
+   *
+   * @param {number} codEstab - Código do estabelecimento
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @returns {Array} Lista de clientes inativos
+   */
+  async getAtividadeClientesInativos(codEstab, dataInicio, dataFim) {
+    try {
+      const dtInicio = this.formatDateBelle(dataInicio);
+      const dtFim = this.formatDateBelle(dataFim);
+
+      const data = await this.cachedRequest('/relatorios/atividade_clientes_inativos', {
+        codEstab,
+        dtInicio,
+        dtFim,
+      });
+      return data || [];
+    } catch (error) {
+      logger.error(`Erro ao buscar atividade clientes inativos (estab ${codEstab}):`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca resumo comercial de clientes
+   * Endpoint: /relatorios/resumo_comercial_clientes
+   *
+   * @param {number} codEstab - Código do estabelecimento
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @returns {Array} Resumo comercial com LTV, ticket médio, etc.
+   */
+  async getResumoComercialClientes(codEstab, dataInicio, dataFim) {
+    try {
+      const dtInicio = this.formatDateBelle(dataInicio);
+      const dtFim = this.formatDateBelle(dataFim);
+
+      const data = await this.cachedRequest('/relatorios/resumo_comercial_clientes', {
+        codEstab,
+        dtVendaIni: dtInicio,
+        dtVendaFim: dtFim,
+      });
+      return data || [];
+    } catch (error) {
+      logger.error(`Erro ao buscar resumo comercial clientes (estab ${codEstab}):`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Busca dados consolidados de atividade de clientes de TODOS os estabelecimentos
+   * Combina clientes ativos e inativos para análise completa
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @returns {Object} Dados consolidados de atividade
+   */
+  async getAtividadeClientesConsolidado(dataInicio, dataFim) {
+    const chunks = this.dividePeriodoEmChunks(dataInicio, dataFim);
+
+    const ativosPromises = [];
+    const inativosPromises = [];
+    const resumoPromises = [];
+
+    for (const codEstab of this.estabelecimentos) {
+      for (const chunk of chunks) {
+        ativosPromises.push(
+          this.getAtividadeClientesAtivos(codEstab, chunk.inicio, chunk.fim)
+            .then(data => ({ codEstab, data }))
+            .catch(() => ({ codEstab, data: [] }))
+        );
+        inativosPromises.push(
+          this.getAtividadeClientesInativos(codEstab, chunk.inicio, chunk.fim)
+            .then(data => ({ codEstab, data }))
+            .catch(() => ({ codEstab, data: [] }))
+        );
+        resumoPromises.push(
+          this.getResumoComercialClientes(codEstab, chunk.inicio, chunk.fim)
+            .then(data => ({ codEstab, data }))
+            .catch(() => ({ codEstab, data: [] }))
+        );
+      }
+    }
+
+    const [ativosResults, inativosResults, resumoResults] = await Promise.all([
+      Promise.all(ativosPromises),
+      Promise.all(inativosPromises),
+      Promise.all(resumoPromises),
+    ]);
+
+    // Consolidar dados
+    const clientesAtivosMap = {};
+    const clientesInativosMap = {};
+    let totalAtivos = 0;
+    let totalInativos = 0;
+
+    // Processar clientes ativos
+    ativosResults.forEach(result => {
+      if (Array.isArray(result.data)) {
+        result.data.forEach(cliente => {
+          const id = cliente.codCliente || cliente.cod_cliente;
+          if (id && !clientesAtivosMap[id]) {
+            clientesAtivosMap[id] = {
+              id,
+              nome: cliente.nomeCliente || cliente.nome_cliente || `Cliente ${id}`,
+              ultimaVisita: cliente.dtUltimaVisita || cliente.dt_ultima_visita,
+              totalVisitas: parseInt(cliente.qtdVisitas || cliente.qtd_visitas) || 0,
+              totalGasto: this.parseBrazilianNumber(cliente.valorTotal || cliente.valor_total || 0),
+              estabelecimento: this.estabelecimentosMap[result.codEstab],
+            };
+            totalAtivos++;
+          }
+        });
+      }
+    });
+
+    // Processar clientes inativos
+    inativosResults.forEach(result => {
+      if (Array.isArray(result.data)) {
+        result.data.forEach(cliente => {
+          const id = cliente.codCliente || cliente.cod_cliente;
+          if (id && !clientesInativosMap[id]) {
+            clientesInativosMap[id] = {
+              id,
+              nome: cliente.nomeCliente || cliente.nome_cliente || `Cliente ${id}`,
+              ultimaVisita: cliente.dtUltimaVisita || cliente.dt_ultima_visita,
+              diasInativo: parseInt(cliente.diasInativo || cliente.dias_inativo) || 0,
+              totalGasto: this.parseBrazilianNumber(cliente.valorTotal || cliente.valor_total || 0),
+              estabelecimento: this.estabelecimentosMap[result.codEstab],
+            };
+            totalInativos++;
+          }
+        });
+      }
+    });
+
+    // Calcular métricas
+    const clientesAtivos = Object.values(clientesAtivosMap);
+    const clientesInativos = Object.values(clientesInativosMap);
+
+    const taxaAtividade = totalAtivos + totalInativos > 0
+      ? (totalAtivos / (totalAtivos + totalInativos)) * 100
+      : 0;
+
+    const ticketMedioAtivos = clientesAtivos.length > 0
+      ? clientesAtivos.reduce((sum, c) => sum + c.totalGasto, 0) / clientesAtivos.length
+      : 0;
+
+    logger.info(`[Belle] getAtividadeClientesConsolidado: ${totalAtivos} ativos, ${totalInativos} inativos`);
+
+    return {
+      totalAtivos,
+      totalInativos,
+      taxaAtividade: Math.round(taxaAtividade * 10) / 10,
+      ticketMedioAtivos: Math.round(ticketMedioAtivos * 100) / 100,
+      clientesAtivos: clientesAtivos.slice(0, 100),
+      clientesInativos: clientesInativos.sort((a, b) => b.diasInativo - a.diasInativo).slice(0, 100),
+      periodo: { inicio: dataInicio, fim: dataFim },
+    };
+  }
+
+  /**
+   * Busca top 10 clientes por faturamento
+   * Endpoint: /relatorios/dez_principais_clientes (se disponível)
+   *
+   * @param {number} codEstab - Código do estabelecimento
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @returns {Array} Top 10 clientes
+   */
+  async getTopClientes(codEstab, dataInicio, dataFim) {
+    try {
+      const dtInicio = this.formatDateBelle(dataInicio);
+      const dtFim = this.formatDateBelle(dataFim);
+
+      const data = await this.cachedRequest('/relatorios/dez_principais_clientes', {
+        codEstab,
+        dtInicio,
+        dtFim,
+      });
+      return data || [];
+    } catch (error) {
+      logger.warn(`Endpoint dez_principais_clientes não disponível (estab ${codEstab}):`, error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Calcula métricas avançadas de pacientes para o BI
+   * Combina dados de atividade, LTV e segmentação
+   *
+   * @param {string} dataInicio - Data início (yyyy-MM-dd)
+   * @param {string} dataFim - Data fim (yyyy-MM-dd)
+   * @param {number[]} estabelecimentosFiltro - Filtro de estabelecimentos
+   * @returns {Object} Métricas avançadas de pacientes
+   */
+  async getMetricasAvancadasPacientes(dataInicio, dataFim, estabelecimentosFiltro = []) {
+    const estabs = estabelecimentosFiltro.length > 0
+      ? estabelecimentosFiltro
+      : this.estabelecimentos;
+
+    try {
+      // Buscar dados em paralelo
+      const [atividadeData, ltvData, recorrenciaData] = await Promise.all([
+        this.getAtividadeClientesConsolidado(dataInicio, dataFim),
+        this.getCustomerLTVMetrics(dataInicio, dataFim, estabs),
+        this.getRecurrenceMetrics(dataInicio, dataFim, 30),
+      ]);
+
+      // Calcular segmentação por valor (Good-fit vs Bad-fit para 8Ps)
+      const avgLtv = ltvData.avgLTV || 0;
+      const avgTicket = ltvData.avgTicket || 0;
+
+      // Good-fit: clientes com LTV acima da média e mais de 1 compra
+      const goodFitClientes = ltvData.topCustomers?.filter(c =>
+        c.totalGasto > avgLtv && c.numCompras > 1
+      ) || [];
+
+      // Calcular taxa de churn (clientes inativos / total)
+      const totalClientes = atividadeData.totalAtivos + atividadeData.totalInativos;
+      const taxaChurn = totalClientes > 0
+        ? (atividadeData.totalInativos / totalClientes) * 100
+        : 0;
+
+      // MAC (Monthly Active Customers) - usar ativos do período
+      const mac = atividadeData.totalAtivos;
+
+      return {
+        // Métricas de Atividade
+        totalAtivos: atividadeData.totalAtivos,
+        totalInativos: atividadeData.totalInativos,
+        taxaAtividade: atividadeData.taxaAtividade,
+        taxaChurn: Math.round(taxaChurn * 10) / 10,
+        mac,
+
+        // Métricas de Valor
+        avgLTV: ltvData.avgLTV,
+        avgTicket: ltvData.avgTicket,
+        avgPurchases: ltvData.avgPurchases,
+
+        // Métricas de Recorrência
+        taxaRecorrencia: recorrenciaData.taxaRecorrencia,
+        intervaloMedioDias: recorrenciaData.intervaloMedioDias,
+        clientesRecorrentes: recorrenciaData.clientesRecorrentes,
+
+        // Segmentação Good-fit / Bad-fit (8Ps)
+        goodFitCount: goodFitClientes.length,
+        goodFitPercentual: totalClientes > 0
+          ? Math.round((goodFitClientes.length / totalClientes) * 1000) / 10
+          : 0,
+        topGoodFitClientes: goodFitClientes.slice(0, 10),
+
+        // Distribuição LTV
+        ltvDistribution: ltvData.ltvDistribution,
+
+        // Listas para detalhamento
+        clientesInativos: atividadeData.clientesInativos,
+        periodo: { inicio: dataInicio, fim: dataFim },
+      };
+    } catch (error) {
+      logger.error('Erro ao calcular métricas avançadas de pacientes:', error.message);
+      return {
+        totalAtivos: 0,
+        totalInativos: 0,
+        taxaAtividade: 0,
+        taxaChurn: 0,
+        mac: 0,
+        avgLTV: 0,
+        avgTicket: 0,
+        avgPurchases: 0,
+        taxaRecorrencia: 0,
+        intervaloMedioDias: 0,
+        clientesRecorrentes: 0,
+        goodFitCount: 0,
+        goodFitPercentual: 0,
+        topGoodFitClientes: [],
+        ltvDistribution: [],
+        clientesInativos: [],
+        periodo: { inicio: dataInicio, fim: dataFim },
+      };
+    }
   }
 }
 

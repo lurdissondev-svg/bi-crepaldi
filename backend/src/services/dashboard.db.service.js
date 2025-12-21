@@ -607,7 +607,9 @@ class DashboardDBService {
   async getNewPatientRevenuePercentage(startDate, endDate, centrosCusto = []) {
     try {
       // Query que calcula faturamento separado por pacientes novos vs recorrentes
-      // usando a tabela customer_analytics criada na Fase 2
+      // Lógica: para cada transação, verifica se o cliente já tinha comprado ANTES dessa transação
+      // - NOVO: a transação é a primeira compra do cliente (dt_lancamento próximo de primeira_compra_at)
+      // - RECORRENTE: o cliente já tinha comprado antes dessa transação
       let query = `
         WITH period_sales AS (
           SELECT
@@ -615,8 +617,13 @@ class DashboardDBService {
             cr.valor_liquido,
             cr.dt_lancamento,
             cr.cod_estab,
-            ca.is_returning_customer,
-            ca.primeira_compra_at
+            ca.primeira_compra_at,
+            -- Transação é "nova" se é a primeira compra do cliente (margem de 7 dias)
+            CASE
+              WHEN ca.primeira_compra_at IS NULL THEN true
+              WHEN cr.dt_lancamento::date <= (ca.primeira_compra_at::date + INTERVAL '7 days') THEN true
+              ELSE false
+            END AS is_first_purchase
           FROM contas_receber cr
           LEFT JOIN customer_analytics ca ON cr.cod_cliente = ca.cliente_id
           WHERE cr.dt_lancamento >= $1 AND cr.dt_lancamento <= $2 AND cr.valor_liquido > 0
@@ -633,24 +640,13 @@ class DashboardDBService {
         ),
         revenue_by_type AS (
           SELECT
-            -- Paciente novo: primeira compra no período OU não tem histórico anterior
-            SUM(CASE
-              WHEN primeira_compra_at IS NULL THEN valor_liquido
-              WHEN primeira_compra_at >= $1::date THEN valor_liquido
-              ELSE 0
-            END) AS new_patient_revenue,
-            -- Paciente recorrente: já tinha compras antes do período
-            SUM(CASE
-              WHEN primeira_compra_at IS NOT NULL AND primeira_compra_at < $1::date THEN valor_liquido
-              ELSE 0
-            END) AS returning_patient_revenue,
+            -- Faturamento de transações de primeira compra
+            SUM(CASE WHEN is_first_purchase THEN valor_liquido ELSE 0 END) AS new_patient_revenue,
+            -- Faturamento de transações de clientes recorrentes
+            SUM(CASE WHEN NOT is_first_purchase THEN valor_liquido ELSE 0 END) AS returning_patient_revenue,
             SUM(valor_liquido) AS total_revenue,
-            COUNT(DISTINCT CASE
-              WHEN primeira_compra_at IS NULL OR primeira_compra_at >= $1::date THEN cod_cliente
-            END) AS new_patient_count,
-            COUNT(DISTINCT CASE
-              WHEN primeira_compra_at IS NOT NULL AND primeira_compra_at < $1::date THEN cod_cliente
-            END) AS returning_patient_count
+            COUNT(DISTINCT CASE WHEN is_first_purchase THEN cod_cliente END) AS new_patient_count,
+            COUNT(DISTINCT CASE WHEN NOT is_first_purchase THEN cod_cliente END) AS returning_patient_count
           FROM period_sales
         )
         SELECT
@@ -932,8 +928,8 @@ class DashboardDBService {
     try {
       const timer = Date.now();
 
-      // Query para buscar faturamento por cliente
-      let query = `
+      // 1. Query para buscar faturamento por cliente NO PERÍODO SELECIONADO
+      let faturamentoQuery = `
         WITH cliente_stats AS (
           SELECT
             cod_cliente,
@@ -948,14 +944,14 @@ class DashboardDBService {
             AND valor_liquido > 0
       `;
 
-      const params = [startDate, endDate];
+      const faturamentoParams = [startDate, endDate];
 
       if (estabelecimentosFiltro.length > 0) {
-        query += ` AND cod_estab = ANY($3)`;
-        params.push(estabelecimentosFiltro);
+        faturamentoQuery += ` AND cod_estab = ANY($3)`;
+        faturamentoParams.push(estabelecimentosFiltro);
       }
 
-      query += `
+      faturamentoQuery += `
           GROUP BY cod_cliente, raw_data->>'nome_cliente'
         )
         SELECT
@@ -963,50 +959,120 @@ class DashboardDBService {
           COALESCE(nome_cliente, 'Cliente ' || cod_cliente) as cliente,
           quantidade_vendas as "quantidadeVendas",
           ROUND(investimento::numeric, 2) as investimento,
-          ultima_compra,
-          EXTRACT(DAY FROM NOW() - ultima_compra)::integer as dias_sem_vir
+          ultima_compra
         FROM cliente_stats
         WHERE nome_cliente IS NOT NULL AND nome_cliente != ''
         ORDER BY investimento DESC
       `;
 
-      const result = await db.query(query, params);
+      const faturamentoResult = await db.query(faturamentoQuery, faturamentoParams);
+      const faturamentoPaciente = faturamentoResult.rows.map(row => ({
+        cliente: row.cliente,
+        clienteId: row.cod_cliente,
+        quantidadeVendas: parseInt(row.quantidadeVendas) || 0,
+        investimento: parseFloat(row.investimento) || 0,
+      }));
 
-      // Separar em categorias
-      const faturamentoPaciente = [];
-      const potenciaisMais4Meses = [];
-      const potenciaisMenos4Meses = [];
+      // 2. Query para buscar POTENCIAIS +4 meses (mais de 120 dias sem comprar)
+      // Ordenados por investimento (maior valor primeiro)
+      let potenciaisMais4Query = `
+        WITH cliente_historico AS (
+          SELECT
+            cod_cliente,
+            raw_data->>'nome_cliente' as nome_cliente,
+            COUNT(*) as quantidade_vendas,
+            SUM(valor_liquido) as investimento_total,
+            MAX(dt_lancamento) as ultima_compra
+          FROM contas_receber
+          WHERE confirmado = 'S'
+            AND valor_liquido > 0
+      `;
 
-      result.rows.forEach(row => {
-        const paciente = {
-          cliente: row.cliente,
-          clienteId: row.cod_cliente,
-          quantidadeVendas: parseInt(row.quantidadeVendas) || 0,
-          investimento: parseFloat(row.investimento) || 0,
-        };
+      const potenciaisParams = [];
+      let paramIndex = 1;
 
-        faturamentoPaciente.push(paciente);
+      if (estabelecimentosFiltro.length > 0) {
+        potenciaisMais4Query += ` AND cod_estab = ANY($${paramIndex})`;
+        potenciaisParams.push(estabelecimentosFiltro);
+        paramIndex++;
+      }
 
-        const diasSemVir = parseInt(row.dias_sem_vir) || 0;
+      potenciaisMais4Query += `
+          GROUP BY cod_cliente, raw_data->>'nome_cliente'
+        )
+        SELECT
+          cod_cliente,
+          COALESCE(nome_cliente, 'Cliente ' || cod_cliente) as cliente,
+          quantidade_vendas as "quantidadeVendas",
+          ROUND(investimento_total::numeric, 2) as investimento,
+          EXTRACT(DAY FROM NOW() - ultima_compra)::integer as dias_sem_vir
+        FROM cliente_historico
+        WHERE nome_cliente IS NOT NULL
+          AND nome_cliente != ''
+          AND EXTRACT(DAY FROM NOW() - ultima_compra) > 120
+        ORDER BY investimento_total DESC
+        LIMIT 100
+      `;
 
-        if (diasSemVir > 120) {
-          potenciaisMais4Meses.push({
-            ...paciente,
-            diasSemVir,
-          });
-        } else if (diasSemVir > 30) {
-          potenciaisMenos4Meses.push({
-            ...paciente,
-            diasSemVir,
-          });
-        }
-      });
+      // 3. Query para buscar POTENCIAIS 1-4 meses (30-120 dias sem comprar)
+      let potenciaisMenos4Query = `
+        WITH cliente_historico AS (
+          SELECT
+            cod_cliente,
+            raw_data->>'nome_cliente' as nome_cliente,
+            COUNT(*) as quantidade_vendas,
+            SUM(valor_liquido) as investimento_total,
+            MAX(dt_lancamento) as ultima_compra
+          FROM contas_receber
+          WHERE confirmado = 'S'
+            AND valor_liquido > 0
+      `;
 
-      // Ordenar potenciais por dias sem vir
-      potenciaisMais4Meses.sort((a, b) => b.diasSemVir - a.diasSemVir);
-      potenciaisMenos4Meses.sort((a, b) => b.diasSemVir - a.diasSemVir);
+      if (estabelecimentosFiltro.length > 0) {
+        potenciaisMenos4Query += ` AND cod_estab = ANY($1)`;
+      }
 
-      logger.debug(`[DB] getPacientesAnalyticsFromDB: ${faturamentoPaciente.length} clientes em ${Date.now() - timer}ms`);
+      potenciaisMenos4Query += `
+          GROUP BY cod_cliente, raw_data->>'nome_cliente'
+        )
+        SELECT
+          cod_cliente,
+          COALESCE(nome_cliente, 'Cliente ' || cod_cliente) as cliente,
+          quantidade_vendas as "quantidadeVendas",
+          ROUND(investimento_total::numeric, 2) as investimento,
+          EXTRACT(DAY FROM NOW() - ultima_compra)::integer as dias_sem_vir
+        FROM cliente_historico
+        WHERE nome_cliente IS NOT NULL
+          AND nome_cliente != ''
+          AND EXTRACT(DAY FROM NOW() - ultima_compra) > 30
+          AND EXTRACT(DAY FROM NOW() - ultima_compra) <= 120
+        ORDER BY investimento_total DESC
+        LIMIT 100
+      `;
+
+      // Executar ambas as queries
+      const [potenciaisMais4Result, potenciaisMenos4Result] = await Promise.all([
+        db.query(potenciaisMais4Query, potenciaisParams),
+        db.query(potenciaisMenos4Query, potenciaisParams),
+      ]);
+
+      const potenciaisMais4Meses = potenciaisMais4Result.rows.map(row => ({
+        cliente: row.cliente,
+        clienteId: row.cod_cliente,
+        quantidadeVendas: parseInt(row.quantidadeVendas) || 0,
+        investimento: parseFloat(row.investimento) || 0,
+        diasSemVir: parseInt(row.dias_sem_vir) || 0,
+      }));
+
+      const potenciaisMenos4Meses = potenciaisMenos4Result.rows.map(row => ({
+        cliente: row.cliente,
+        clienteId: row.cod_cliente,
+        quantidadeVendas: parseInt(row.quantidadeVendas) || 0,
+        investimento: parseFloat(row.investimento) || 0,
+        diasSemVir: parseInt(row.dias_sem_vir) || 0,
+      }));
+
+      logger.debug(`[DB] getPacientesAnalyticsFromDB: ${faturamentoPaciente.length} clientes ativos, ${potenciaisMais4Meses.length} +4m, ${potenciaisMenos4Meses.length} -4m em ${Date.now() - timer}ms`);
 
       return {
         totalClientes: faturamentoPaciente.length,

@@ -4,6 +4,8 @@ import dashboardDBService from '../services/dashboard.db.service.js';
 import leadSaleCorrelator from '../services/leadSaleCorrelator.js';
 import syncService from '../services/sync.service.js';
 import customerAnalyticsService from '../services/customer-analytics.service.js';
+import indicadores8psService from '../services/indicadores8ps.service.js';
+import alertas8psService from '../services/alertas8ps.service.js';
 import { getDateRanges, formatCurrency, getDecade } from '../utils/dateUtils.js';
 import { getInfoDiasUteis, contarDiasUteisPassados, contarDiasUteisRestantes } from '../utils/businessDays.js';
 import { getBusinessDaysForPeriod } from './businessDays.controller.js';
@@ -148,6 +150,10 @@ export const dashboardController = {
       // Data de hoje
       const today = new Date().toISOString().split('T')[0];
 
+      // Detecta se o período selecionado é maior que um mês (35 dias)
+      const diffDays = Math.ceil((new Date(endDate) - new Date(startDate)) / (1000 * 60 * 60 * 24));
+      const isPeriodoLongo = diffDays > 35;
+
       // Helper para buscar faturamento: tenta banco primeiro, fallback para API
       const getFaturamentoWithFallback = async (start, end, estabs = []) => {
         // Tenta buscar do banco primeiro
@@ -163,6 +169,7 @@ export const dashboardController = {
 
       const [
         faturamentoAtual,
+        faturamentoMesAtual, // Sempre o mês atual (para quando período é longo)
         faturamentoMesAnterior,
         faturamentoAnoAtual,
         faturamentoAnoAnterior,
@@ -173,6 +180,12 @@ export const dashboardController = {
         newPatientStatsAnual,
       ] = await Promise.all([
         getFaturamentoWithFallback(startDate, endDate, centrosCusto),
+        // Busca o mês atual (usado quando período selecionado é longo)
+        getFaturamentoWithFallback(
+          dateRanges.thisMonth.start,
+          dateRanges.thisMonth.end,
+          centrosCusto
+        ),
         getFaturamentoWithFallback(
           dateRanges.lastMonth.start,
           dateRanges.lastMonth.end,
@@ -198,25 +211,33 @@ export const dashboardController = {
         ),
         // Busca faturamento diário do período selecionado
         dashboardDBService.getFaturamentoDiarioFromDB(startDate, endDate, centrosCusto),
-        // Calcula porcentagem de pacientes novos vs recorrentes (mensal)
-        dashboardDBService.getNewPatientRevenuePercentage(startDate, endDate, centrosCusto),
-        // Calcula porcentagem de pacientes novos vs recorrentes (anual)
+        // Calcula porcentagem de pacientes novos vs recorrentes (mensal - mês atual)
         dashboardDBService.getNewPatientRevenuePercentage(
-          dateRanges.thisYear.start,
-          dateRanges.thisYear.end,
+          dateRanges.thisMonth.start,
+          dateRanges.thisMonth.end,
           centrosCusto
         ),
+        // Calcula porcentagem de pacientes novos vs recorrentes (anual/período)
+        dashboardDBService.getNewPatientRevenuePercentage(startDate, endDate, centrosCusto),
       ]);
 
       // Faturamento mensal
-      const faturamentoMensal = faturamentoAtual.faturamentoTotal || 0;
+      // Se o período é longo (> 35 dias), usa o mês atual para o card mensal
+      // Se o período é curto, usa o período selecionado
+      const faturamentoMensal = isPeriodoLongo
+        ? (faturamentoMesAtual.faturamentoTotal || 0)
+        : (faturamentoAtual.faturamentoTotal || 0);
       const faturamentoMesAnteriorValor = faturamentoMesAnterior.faturamentoTotal || 0;
       const variacaoMensal = faturamentoMesAnteriorValor > 0
         ? ((faturamentoMensal - faturamentoMesAnteriorValor) / faturamentoMesAnteriorValor) * 100
         : 0;
 
-      // Faturamento anual
-      const faturamentoAnual = faturamentoAnoAtual.faturamentoTotal || 0;
+      // Faturamento anual/período
+      // Se o período é longo, usa o período selecionado para o card anual
+      // Se o período é curto, usa o ano atual
+      const faturamentoAnual = isPeriodoLongo
+        ? (faturamentoAtual.faturamentoTotal || 0)
+        : (faturamentoAnoAtual.faturamentoTotal || 0);
       const faturamentoAnoAnteriorValor = faturamentoAnoAnterior.faturamentoTotal || 0;
       const variacaoAnual = faturamentoAnoAnteriorValor > 0
         ? ((faturamentoAnual - faturamentoAnoAnteriorValor) / faturamentoAnoAnteriorValor) * 100
@@ -243,6 +264,9 @@ export const dashboardController = {
       res.json({
         success: true,
         data: {
+          // Flag para frontend saber se está mostrando período longo
+          isPeriodoLongo,
+          periodoSelecionado: { inicio: startDate, fim: endDate, dias: diffDays },
           mensal: {
             valor: faturamentoMensal,
             valorFormatado: formatCurrency(faturamentoMensal),
@@ -250,6 +274,8 @@ export const dashboardController = {
             mesAnterior: faturamentoMesAnteriorValor,
             mesAnteriorFormatado: formatCurrency(faturamentoMesAnteriorValor),
             pacientesNovosPercentual: pacientesNovosPercentualMensal,
+            // Indica qual período está sendo mostrado no card mensal
+            label: isPeriodoLongo ? 'Mês Atual' : 'Período Selecionado',
           },
           anual: {
             valor: faturamentoAnual,
@@ -258,6 +284,8 @@ export const dashboardController = {
             anoAnterior: faturamentoAnoAnteriorValor,
             anoAnteriorFormatado: formatCurrency(faturamentoAnoAnteriorValor),
             pacientesNovosPercentual: pacientesNovosPercentualAnual,
+            // Indica qual período está sendo mostrado no card anual
+            label: isPeriodoLongo ? 'Período Selecionado' : 'Ano Atual',
           },
           crescimentoMensal,
           crescimentoAnual,
@@ -308,13 +336,7 @@ export const dashboardController = {
       const timer = Date.now();
 
       try {
-        // Verifica se há dados no cache para carregamento rápido de profissionais
-        const cacheData = await dashboardDBService.hasCacheData(startDate, endDate).catch(() => ({
-          hasProcedimentos: false,
-          hasProfissionais: false,
-        }));
-
-        // Buscar TUDO do banco de dados (muito mais rápido que API!)
+        // Buscar TUDO do banco de dados (instantâneo!)
         // Deals WON e LOST agora vêm do PostgreSQL em vez de chamadas lentas à API Bitrix24
         const [dbLeads, wonDeals, lostDeals, dbProcedimentos, dbProcsByQtd, dbProcsPorEstab, apiProfissionais, motivosDesqualificacao] = await Promise.all([
           dashboardDBService.getLeadsAnalytics(startDate, endDate),
@@ -328,28 +350,22 @@ export const dashboardController = {
             logger.warn('[Marketing] Erro ao buscar deals LOST do banco:', err.message);
             return { byMotivoDesqualificacao: [], lostDealsCount: 0 };
           }),
-          // PRIORIZA CACHE: Procedimentos ordenados por VALOR (faturamento)
-          cacheData.hasProcedimentos
-            ? dashboardDBService.getProcedimentosFromCache(startDate, endDate, 20)
-            : belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(err => {
-                logger.warn('[Marketing] Erro ao buscar procedimentos da API Belle:', err.message);
-                return dashboardDBService.getProcedimentosFromVendas(startDate, endDate, 20).catch(() => []);
-              }),
+          // Procedimentos por VALOR - tenta cache primeiro, fallback para API Belle
+          dashboardDBService.getProcedimentosFromCache(startDate, endDate, 20).then(data => {
+            if (data && data.length > 0) return data;
+            // Se cache vazio, busca da API Belle
+            return belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(() => []);
+          }).catch(() => belleService.getProcedimentosFromAPIs(startDate, endDate, 20).catch(() => [])),
           // Procedimentos ordenados por QUANTIDADE vendida
-          cacheData.hasProcedimentos
-            ? dashboardDBService.getProcedimentosByQuantidade(startDate, endDate, 20)
-            : [],
+          dashboardDBService.getProcedimentosByQuantidade(startDate, endDate, 20).catch(() => []),
           // Procedimentos agrupados POR ESTABELECIMENTO (top por valor e quantidade para cada unidade)
-          cacheData.hasProcedimentos
-            ? dashboardDBService.getProcedimentosPorEstabelecimento(startDate, endDate, 10)
-            : {},
-          // PRIORIZA CACHE: Se tiver dados no cache, usa (instantâneo). Senão usa API Belle (lento).
-          cacheData.hasProfissionais
-            ? dashboardDBService.getProfissionaisFromCache(startDate, endDate, 20)
-            : belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(err => {
-                logger.warn('[Marketing] Erro ao buscar profissionais da API Belle:', err.message);
-                return dashboardDBService.getProfissionaisMaisVendas(startDate, endDate, 20).catch(() => []);
-              }),
+          dashboardDBService.getProcedimentosPorEstabelecimento(startDate, endDate, 10).catch(() => ({})),
+          // Profissionais - tenta cache primeiro, fallback para API Belle
+          dashboardDBService.getProfissionaisFromCache(startDate, endDate, 20).then(data => {
+            if (data && data.length > 0) return data;
+            // Se cache vazio, busca da API Belle
+            return belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(() => []);
+          }).catch(() => belleService.getProfissionaisFromAPIs(startDate, endDate, 20).catch(() => [])),
           // Buscar motivos de desqualificação pela data de MODIFICAÇÃO (quando o lead foi desqualificado)
           dashboardDBService.getMotivosDesqualificacao(startDate, endDate).catch(err => {
             logger.warn('[Marketing] Erro ao buscar motivos desqualificação:', err.message);
@@ -786,11 +802,12 @@ export const dashboardController = {
       const endDate = data_fim || dateRanges.thisMonth.end;
 
       // Buscar faturamento por categoria de meta (SPA, Convênios, Bela Laser, Nutrologia)
-      // TUDO DO BANCO - sem chamadas a APIs externas
+      // Usar a função do Belle que já implementa o filtro de profissional para Dermato
+      const metasConfig = config.metas;
+
+      // Buscar faturamento do banco para os estabelecimentos principais
       const faturamento = await dashboardDBService.getFaturamentoFromDB(startDate, endDate, []);
 
-      // Usar configuração de codestabs para classificar corretamente
-      const metasConfig = config.metas;
       const faturamentoPorCategoria = { spa: 0, convenios: 0, belaLaser: 0, nutrologia: 0 };
 
       if (faturamento && faturamento.porEstabelecimento) {
@@ -807,14 +824,23 @@ export const dashboardController = {
           } else if (metasConfig.nutrologia.codestabs.includes(codestab)) {
             faturamentoPorCategoria.nutrologia += estab.valor || 0;
           }
-          // Nota: Dermato (1) não é incluído automaticamente - requer filtro por profissional
+          // Nota: Dermato (1) é filtrado por profissional abaixo
           // Drips (10) não está configurado em nenhuma meta
         });
       }
 
-      // Buscar faturamento adicional de Dermato (DRA KELLY DA CAS) para SPA
-      // Esta lógica complexa requer filtro por profissional, mantida simples por agora
-      // TODO: Implementar filtro por profissional para Dermato se necessário
+      // Buscar faturamento de Dermato filtrado por profissional (DRA KELLY DA CAS) para SPA
+      try {
+        const dermatoResult = await belleService.getFaturamentoDermatoPorProfissional(
+          startDate,
+          endDate,
+          metasConfig.spa.dermatoProfissional
+        );
+        faturamentoPorCategoria.spa += dermatoResult.filtrado || 0;
+        logger.info(`[Metas] Dermato (${metasConfig.spa.dermatoProfissional}): R$ ${(dermatoResult.filtrado || 0).toFixed(2)} adicionado ao SPA`);
+      } catch (dermatoError) {
+        logger.warn('[Metas] Não foi possível buscar faturamento de Dermato por profissional:', dermatoError.message);
+      }
 
       // Buscar dias úteis configurados no banco (ou calcula automaticamente)
       const totalDias = await getBusinessDaysForPeriod(startDate, endDate);
@@ -1904,6 +1930,342 @@ export const dashboardController = {
       res.status(500).json({
         success: false,
         error: 'Erro ao buscar CAC por canal',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== INDICADORES 8Ps (Metodologia Conrado Adolpho) ====================
+
+  /**
+   * Retorna indicadores 8Ps básicos
+   * GET /api/dashboard/8ps
+   */
+  async get8Ps(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo, origem } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',') : [];
+
+      const data = await indicadores8psService.calcularIndicadores8Ps(
+        startDate,
+        endDate,
+        centrosCusto,
+        origem || null
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar indicadores 8Ps:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar indicadores 8Ps',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna indicadores 8Ps avançados (inclui campanhas, gargalos, públicos 9)
+   * GET /api/dashboard/8ps/avancado
+   */
+  async get8PsAvancado(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo, origem } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',') : [];
+
+      const data = await indicadores8psService.calcularIndicadores8PsAvancado(
+        startDate,
+        endDate,
+        centrosCusto,
+        origem || null
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar indicadores 8Ps avançados:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar indicadores 8Ps avançados',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna análise de performance por campanha
+   * GET /api/dashboard/8ps/campanhas
+   */
+  async get8PsCampanhas(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await indicadores8psService.calcularIndicadoresPorCampanha(
+        startDate,
+        endDate
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar indicadores por campanha:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar indicadores por campanha',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna análise de gargalos no funil (motivos de desqualificação)
+   * GET /api/dashboard/8ps/gargalos
+   */
+  async get8PsGargalos(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await indicadores8psService.analisarGargalosFunil(
+        startDate,
+        endDate
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao analisar gargalos do funil:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao analisar gargalos do funil',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna os 9 públicos da metodologia 8Ps
+   * GET /api/dashboard/8ps/publicos
+   */
+  async get8PsPublicos(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      // Buscar dados do Bitrix24 e Belle para montar os públicos
+      const bitrixData = await dashboardDBService.getLeadsAnalyticsFromDB(startDate, endDate);
+      const belleData = await dashboardDBService.getNewPatientRevenuePercentage(startDate, endDate);
+
+      const data = await indicadores8psService.montarPublicos9Avancado(
+        startDate,
+        endDate,
+        {
+          totalLeads: bitrixData.total || 0,
+          leadsQualificados: bitrixData.byStatus?.filter(s => s.semantic === 'success')?.reduce((sum, s) => sum + s.count, 0) || 0,
+          conversas: bitrixData.byStatus?.filter(s => s.semantic === 'process')?.reduce((sum, s) => sum + s.count, 0) || 0,
+          desqualificados: bitrixData.byStatus?.filter(s => s.semantic === 'failure')?.reduce((sum, s) => sum + s.count, 0) || 0,
+          avgConversionDays: bitrixData.metrics?.avgConversionDays || 0,
+          avgInProgressDays: bitrixData.metrics?.avgInProgressDays || 0,
+        },
+        {
+          novosClientes: belleData.newPatientCount || 0,
+          clientesRecorrentes: belleData.returningPatientCount || 0,
+          tempoVidaMedio: 365, // TODO: calcular do banco
+        }
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar públicos 8Ps:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar públicos 8Ps',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== MÉTRICAS AVANÇADAS DE PACIENTES ====================
+
+  /**
+   * Retorna métricas avançadas de pacientes (enriquecimento Belle Software)
+   * GET /api/dashboard/pacientes/avancado
+   */
+  async getPacientesAvancado(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',').map(Number) : [];
+
+      const data = await belleService.getMetricasAvancadasPacientes(
+        startDate,
+        endDate,
+        centrosCusto
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar métricas avançadas de pacientes:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar métricas avançadas de pacientes',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna atividade de clientes (ativos vs inativos)
+   * GET /api/dashboard/pacientes/atividade
+   */
+  async getPacientesAtividade(req, res) {
+    try {
+      const { data_inicio, data_fim } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+
+      const data = await belleService.getAtividadeClientesConsolidado(
+        startDate,
+        endDate
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar atividade de pacientes:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar atividade de pacientes',
+        message: error.message,
+      });
+    }
+  },
+
+  // ==================== ALERTAS 8Ps ====================
+
+  /**
+   * Retorna alertas automáticos baseados nas metas 8Ps
+   * GET /api/dashboard/8ps/alertas
+   */
+  async get8PsAlertas(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',') : [];
+
+      const data = await alertas8psService.gerarAlertas8Ps(
+        startDate,
+        endDate,
+        centrosCusto
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao gerar alertas 8Ps:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao gerar alertas 8Ps',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna resumo de saúde dos indicadores 8Ps (semáforo)
+   * GET /api/dashboard/8ps/saude
+   */
+  async get8PsSaude(req, res) {
+    try {
+      const { data_inicio, data_fim, centros_custo } = req.query;
+      const dateRanges = getDateRanges();
+
+      const startDate = data_inicio || dateRanges.thisMonth.start;
+      const endDate = data_fim || dateRanges.thisMonth.end;
+      const centrosCusto = centros_custo ? centros_custo.split(',') : [];
+
+      const data = await alertas8psService.getSaude8Ps(
+        startDate,
+        endDate,
+        centrosCusto
+      );
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar saúde 8Ps:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar saúde 8Ps',
+        message: error.message,
+      });
+    }
+  },
+
+  /**
+   * Retorna as metas 8Ps configuradas
+   * GET /api/dashboard/8ps/metas
+   */
+  async get8PsMetas(req, res) {
+    try {
+      const data = alertas8psService.getMetas8Ps();
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      logger.error('Erro ao buscar metas 8Ps:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Erro ao buscar metas 8Ps',
         message: error.message,
       });
     }

@@ -5,6 +5,7 @@ import logger, { startTimer, logDataInconsistency } from '../utils/logger.js';
 import bitrix24Service from './bitrix24.service.js';
 import belleService from './belle.service.js';
 import customerAnalyticsService from './customer-analytics.service.js';
+import customerEnrichmentService from './customer-enrichment.service.js';
 import { normalizePhone, normalizeEmail } from '../validators/dataValidator.js';
 
 /**
@@ -17,6 +18,7 @@ class SyncService {
     this.isRunning = false;
     this.intervalId = null;
     this.inactivePatientsIntervalId = null; // Timer separado para pacientes inativos (15 min)
+    this.customerEnrichmentIntervalId = null; // Timer separado para enriquecimento (30 min)
     this.syncQueue = [];
     this.lastSyncAt = null;
     this.nextSyncAt = null;
@@ -49,9 +51,11 @@ class SyncService {
 
     const intervalMs = config.sync.intervalMinutes * 60 * 1000;
     const inactivePatientsIntervalMs = 15 * 60 * 1000; // 15 minutos
+    const customerEnrichmentIntervalMs = 30 * 60 * 1000; // 30 minutos
 
     logger.info(`Iniciando sync job a cada ${config.sync.intervalMinutes} minutos`);
     logger.info(`Iniciando sync de pacientes inativos a cada 15 minutos`);
+    logger.info(`Iniciando enriquecimento de clientes a cada 30 minutos`);
 
     // Executa imediatamente na primeira vez
     this.runFullSync();
@@ -62,6 +66,13 @@ class SyncService {
         logger.error('[InactivePatients] Erro no sync inicial:', err.message)
       );
     }, 30000);
+
+    // Executa enriquecimento de clientes após 60 segundos
+    setTimeout(() => {
+      this.runCustomerEnrichment().catch(err =>
+        logger.error('[Enrichment] Erro no enriquecimento inicial:', err.message)
+      );
+    }, 60000);
 
     // Configura o intervalo principal (5 min)
     this.intervalId = setInterval(() => {
@@ -74,6 +85,13 @@ class SyncService {
         logger.error('[InactivePatients] Erro no sync agendado:', err.message)
       );
     }, inactivePatientsIntervalMs);
+
+    // Configura o intervalo de enriquecimento de clientes (30 min)
+    this.customerEnrichmentIntervalId = setInterval(() => {
+      this.runCustomerEnrichment().catch(err =>
+        logger.error('[Enrichment] Erro no enriquecimento agendado:', err.message)
+      );
+    }, customerEnrichmentIntervalMs);
   }
 
   /**
@@ -97,6 +115,11 @@ class SyncService {
       clearInterval(this.inactivePatientsIntervalId);
       this.inactivePatientsIntervalId = null;
       logger.info('Sync de pacientes inativos parado');
+    }
+    if (this.customerEnrichmentIntervalId) {
+      clearInterval(this.customerEnrichmentIntervalId);
+      this.customerEnrichmentIntervalId = null;
+      logger.info('Enriquecimento de clientes parado');
     }
   }
 
@@ -570,6 +593,9 @@ class SyncService {
       // Sync vendas
       await this.syncVendas();
 
+      // Sync clientes (para enriquecimento de dados)
+      await this.syncClientes();
+
       // Sync procedimentos e profissionais para o cache mensal (carregamento rápido)
       await this.syncProcedimentosProfissionaisCache();
 
@@ -711,6 +737,121 @@ class SyncService {
     } catch (error) {
       await this.finishSyncLog(logId, 'error', {}, error.message);
       throw error;
+    }
+  }
+
+  // ==================== SYNC CLIENTES ====================
+
+  /**
+   * Sincroniza clientes da Belle API para a tabela local
+   * Necessário para o enriquecimento de dados de contato
+   */
+  async syncClientes() {
+    const logId = await this.startSyncLog('clientes', 'full_sync');
+    const timer = startTimer('Clientes Sync');
+
+    try {
+      // Busca estabelecimentos ativos
+      const estabsResult = await db.query(`
+        SELECT cod_estab, nome FROM estabelecimentos WHERE ativo = true
+      `);
+
+      let totalFetched = 0;
+      let inserted = 0;
+      let updated = 0;
+
+      for (const estab of estabsResult.rows) {
+        try {
+          const clientes = await belleService.getTodosClientes(estab.cod_estab);
+
+          if (!clientes || clientes.length === 0) {
+            logger.debug(`[Clientes] Nenhum cliente encontrado para estab ${estab.cod_estab}`);
+            continue;
+          }
+
+          totalFetched += clientes.length;
+
+          for (const cliente of clientes) {
+            try {
+              // API Belle retorna 'codigo' como ID do cliente
+              const codCliente = parseInt(cliente.codigo) || parseInt(cliente.cod_cliente) || parseInt(cliente.id);
+              if (!codCliente || isNaN(codCliente)) {
+                logger.debug(`[Clientes] Cliente sem código válido: ${JSON.stringify(cliente).slice(0, 100)}`);
+                continue;
+              }
+
+              const result = await db.query(`
+                INSERT INTO clientes (
+                  cod_cliente, cod_estab, nome, telefone, celular, email,
+                  cpf, data_nascimento, sexo, endereco, cidade, uf, cep,
+                  data_cadastro, ativo, synced_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+                ON CONFLICT (cod_cliente, cod_estab)
+                DO UPDATE SET
+                  nome = COALESCE(EXCLUDED.nome, clientes.nome),
+                  telefone = COALESCE(NULLIF(EXCLUDED.telefone, ''), clientes.telefone),
+                  celular = COALESCE(NULLIF(EXCLUDED.celular, ''), clientes.celular),
+                  email = COALESCE(NULLIF(EXCLUDED.email, ''), clientes.email),
+                  cpf = COALESCE(EXCLUDED.cpf, clientes.cpf),
+                  data_nascimento = COALESCE(EXCLUDED.data_nascimento, clientes.data_nascimento),
+                  sexo = COALESCE(EXCLUDED.sexo, clientes.sexo),
+                  endereco = COALESCE(EXCLUDED.endereco, clientes.endereco),
+                  cidade = COALESCE(EXCLUDED.cidade, clientes.cidade),
+                  uf = COALESCE(EXCLUDED.uf, clientes.uf),
+                  cep = COALESCE(EXCLUDED.cep, clientes.cep),
+                  ativo = EXCLUDED.ativo,
+                  synced_at = NOW(),
+                  updated_at = NOW()
+                RETURNING (xmax = 0) AS is_insert
+              `, [
+                codCliente,
+                estab.cod_estab,
+                cliente.nome || cliente.razao_social || `Cliente ${codCliente}`,
+                cliente.telefone || cliente.fone || null,
+                cliente.celular || cliente.fone_celular || null,
+                cliente.email || null,
+                cliente.cpf || cliente.cnpj_cpf || null,
+                cliente.dtNascimento || cliente.data_nascimento || null,
+                cliente.sexo ? cliente.sexo.charAt(0).toUpperCase() : null,
+                cliente.endereco || null,
+                cliente.cidade || null,
+                cliente.UF || cliente.uf || cliente.estado || null,
+                cliente.cep || null,
+                cliente.dtCadastro || cliente.data_cadastro || null,
+                cliente.ativo !== 'N' && cliente.ativo !== false,
+              ]);
+
+              if (result.rows[0]?.is_insert) {
+                inserted++;
+              } else if (result.rowCount > 0) {
+                updated++;
+              }
+            } catch (error) {
+              logger.debug(`[Clientes] Erro ao inserir cliente ${cliente.cod_cliente || cliente.id}: ${error.message}`);
+            }
+          }
+
+          logger.debug(`[Clientes] Estab ${estab.cod_estab}: ${clientes.length} clientes processados`);
+        } catch (error) {
+          logger.warn(`[Clientes] Erro ao buscar clientes do estab ${estab.cod_estab}: ${error.message}`);
+        }
+      }
+
+      await this.finishSyncLog(logId, 'success', {
+        records_fetched: totalFetched,
+        records_inserted: inserted,
+        records_updated: updated,
+      });
+
+      timer({ status: 'success', fetched: totalFetched, inserted, updated });
+      logger.info(`[Clientes] Sincronizados: ${totalFetched} (${inserted} novos, ${updated} atualizados)`);
+
+      return { fetched: totalFetched, inserted, updated };
+    } catch (error) {
+      await this.finishSyncLog(logId, 'error', {}, error.message);
+      timer({ status: 'error' });
+      logger.error('[Clientes] Erro no sync:', error.message);
+      // Não lança erro para não interromper o sync principal
     }
   }
 
@@ -1052,6 +1193,45 @@ class SyncService {
     } catch (error) {
       logger.error('Erro no customer analytics:', error.message);
       timer({ status: 'error' });
+      throw error;
+    }
+  }
+
+  // ==================== CUSTOMER ENRICHMENT ====================
+
+  /**
+   * Executa o enriquecimento de dados de contato de clientes
+   * Preenche telefone, celular e email faltantes a partir de:
+   * 1. Leads Bitrix24 correlacionados
+   * 2. Raw data de contas_receber e vendas
+   * 3. Mesmo cliente em outros estabelecimentos
+   */
+  async runCustomerEnrichment() {
+    const logId = await this.startSyncLog('customer_enrichment', 'full_sync');
+    const timer = startTimer('Customer Enrichment');
+
+    try {
+      logger.info('[Enrichment] Iniciando enriquecimento de clientes...');
+
+      const result = await customerEnrichmentService.runEnrichment({
+        limit: 100, // Processa 100 clientes por execução
+        dryRun: false,
+      });
+
+      await this.finishSyncLog(logId, 'success', {
+        records_fetched: result.processed,
+        records_inserted: result.enriched,
+        records_updated: 0,
+      });
+
+      timer({ status: 'success', enriched: result.enriched });
+      logger.info(`[Enrichment] ${result.enriched} clientes enriquecidos de ${result.processed} processados`);
+
+      return result;
+    } catch (error) {
+      await this.finishSyncLog(logId, 'error', {}, error.message);
+      timer({ status: 'error' });
+      logger.error('[Enrichment] Erro no enriquecimento:', error.message);
       throw error;
     }
   }

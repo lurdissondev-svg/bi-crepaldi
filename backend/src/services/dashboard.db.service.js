@@ -928,41 +928,47 @@ class DashboardDBService {
     try {
       const timer = Date.now();
 
-      // 1. Query para buscar faturamento por cliente NO PERÍODO SELECIONADO
+      // 1. Query para buscar faturamento por cliente NO PERÍODO SELECIONADO (com dados de contato)
       let faturamentoQuery = `
         WITH cliente_stats AS (
           SELECT
-            cod_cliente,
-            raw_data->>'nome_cliente' as nome_cliente,
+            cr.cod_cliente,
+            cr.cod_estab,
+            cr.raw_data->>'nome_cliente' as nome_cliente,
             COUNT(*) as quantidade_vendas,
-            SUM(valor_liquido) as investimento,
-            MAX(dt_lancamento) as ultima_compra
-          FROM contas_receber
-          WHERE dt_lancamento >= $1::date
-            AND dt_lancamento <= $2::date
-            AND confirmado = 'S'
-            AND valor_liquido > 0
+            SUM(cr.valor_liquido) as investimento,
+            MAX(cr.dt_lancamento) as ultima_compra
+          FROM contas_receber cr
+          WHERE cr.dt_lancamento >= $1::date
+            AND cr.dt_lancamento <= $2::date
+            AND cr.confirmado = 'S'
+            AND cr.valor_liquido > 0
       `;
 
       const faturamentoParams = [startDate, endDate];
 
       if (estabelecimentosFiltro.length > 0) {
-        faturamentoQuery += ` AND cod_estab = ANY($3)`;
+        faturamentoQuery += ` AND cr.cod_estab = ANY($3)`;
         faturamentoParams.push(estabelecimentosFiltro);
       }
 
       faturamentoQuery += `
-          GROUP BY cod_cliente, raw_data->>'nome_cliente'
+          GROUP BY cr.cod_cliente, cr.cod_estab, cr.raw_data->>'nome_cliente'
         )
         SELECT
-          cod_cliente,
-          COALESCE(nome_cliente, 'Cliente ' || cod_cliente) as cliente,
-          quantidade_vendas as "quantidadeVendas",
-          ROUND(investimento::numeric, 2) as investimento,
-          ultima_compra
-        FROM cliente_stats
-        WHERE nome_cliente IS NOT NULL AND nome_cliente != ''
-        ORDER BY investimento DESC
+          cs.cod_cliente,
+          COALESCE(cs.nome_cliente, 'Cliente ' || cs.cod_cliente) as cliente,
+          cs.quantidade_vendas as "quantidadeVendas",
+          ROUND(cs.investimento::numeric, 2) as investimento,
+          cs.ultima_compra,
+          EXTRACT(DAY FROM NOW() - cs.ultima_compra)::integer as dias_sem_vir,
+          COALESCE(c.telefone, '') as telefone,
+          COALESCE(c.celular, '') as celular,
+          COALESCE(c.email, '') as email
+        FROM cliente_stats cs
+        LEFT JOIN clientes c ON cs.cod_cliente = c.cod_cliente AND cs.cod_estab = c.cod_estab
+        WHERE cs.nome_cliente IS NOT NULL AND cs.nome_cliente != ''
+        ORDER BY cs.investimento DESC
       `;
 
       const faturamentoResult = await db.query(faturamentoQuery, faturamentoParams);
@@ -971,6 +977,10 @@ class DashboardDBService {
         clienteId: row.cod_cliente,
         quantidadeVendas: parseInt(row.quantidadeVendas) || 0,
         investimento: parseFloat(row.investimento) || 0,
+        diasSemVir: parseInt(row.dias_sem_vir) || 0,
+        telefone: row.telefone || '',
+        celular: row.celular || '',
+        email: row.email || '',
       }));
 
       // 2. Query para buscar POTENCIAIS +4 meses (mais de 120 dias sem comprar)

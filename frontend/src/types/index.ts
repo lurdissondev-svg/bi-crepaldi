@@ -295,18 +295,27 @@ export interface PacientesData {
     clienteId: string | number;
     investimento: number;
     quantidadeVendas: number;
+    telefone?: string;
+    celular?: string;
+    email?: string;
   }>;
   potenciaisMais4Meses: Array<{
     cliente: string;
     clienteId: string | number;
     diasSemVir: number;
     investimento: number;
+    telefone?: string;
+    celular?: string;
+    email?: string;
   }>;
   potenciaisMenos4Meses: Array<{
     cliente: string;
     clienteId: string | number;
     diasSemVir: number;
     investimento: number;
+    telefone?: string;
+    celular?: string;
+    email?: string;
   }>;
   totalClientes: number;
 }

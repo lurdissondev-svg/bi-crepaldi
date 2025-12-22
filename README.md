@@ -1,6 +1,12 @@
 # BI Crepaldi - Sistema de Business Intelligence
 
-Sistema de Business Intelligence moderno para análise de dados financeiros e de marketing, integrando **Belle Software** (dados financeiros) e **Bitrix24** (dados de marketing/CRM).
+[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](CHANGELOG.md)
+[![Vue](https://img.shields.io/badge/Vue-3.x-4FC08D.svg)](https://vuejs.org/)
+[![Node](https://img.shields.io/badge/Node-18+-339933.svg)](https://nodejs.org/)
+
+Sistema de Business Intelligence moderno para análise de dados financeiros e de marketing, integrando **Belle Software** (dados financeiros), **Bitrix24** (dados de marketing/CRM) e **Meta Ads** (campanhas digitais).
+
+Implementa a metodologia **8Ps do Marketing Digital** (Conrado Adolpho) com 17 indicadores de geração de caixa.
 
 ## Arquitetura
 
@@ -16,17 +22,19 @@ BI CREPALDI/
 │   │   └── utils/          # Utilitários
 │   └── package.json
 │
-├── frontend/                # React + Vite + Tailwind
+├── frontend/                # Vue 3 + Vite + Tailwind + TypeScript
 │   ├── src/
-│   │   ├── components/     # Componentes React
-│   │   │   ├── charts/     # Gráficos (Recharts)
+│   │   ├── components/     # Componentes Vue
+│   │   │   ├── charts/     # Gráficos (Chart.js)
 │   │   │   ├── dashboard/  # Cards e métricas
 │   │   │   ├── filters/    # Filtros
-│   │   │   └── layout/     # Layout (Sidebar, Header)
-│   │   ├── hooks/          # Custom hooks
+│   │   │   ├── layout/     # Layout (Sidebar, Header)
+│   │   │   ├── navigation/ # Navegação
+│   │   │   └── ui/         # Componentes UI reutilizáveis
+│   │   ├── stores/         # Pinia stores
 │   │   ├── pages/          # Páginas do dashboard
-│   │   ├── services/       # API client
-│   │   ├── styles/         # CSS/Tailwind
+│   │   ├── services/       # API client com cache
+│   │   ├── styles/         # CSS/Tailwind com tema escuro
 │   │   ├── types/          # TypeScript types
 │   │   └── utils/          # Utilitários
 │   └── package.json
@@ -40,12 +48,31 @@ BI CREPALDI/
 
 1. **Resumo** - Visão geral com faturamento, pacientes novos/recorrentes, desempenho por dezena
 2. **Faturamento** - Análise financeira mensal/anual, crescimento, faturamento diário
-3. **Marketing** - Leads por horário, origem, taxa de conversão, UTM tracking
+3. **Marketing** - Leads por horário, origem, taxa de conversão, UTM tracking, **indicadores 8Ps**
 4. **Comercial** - Conversão por origem, metas, performance de profissionais
 5. **Atendimento** - Desempenho de responsáveis, ticket médio, análise 80/20
 6. **Administrativo Financeiro** - Métricas financeiras consolidadas
 7. **Quadro de Metas** - Acompanhamento de metas SPA
-8. **Pacientes** - Faturamento por paciente, pacientes potenciais
+8. **Pacientes** - Faturamento por paciente, pacientes potenciais, segmentação RFM
+
+### Indicadores 8Ps (Metodologia Conrado Adolpho)
+
+O sistema implementa os **17 indicadores da geração de caixa** organizados por departamento:
+
+| Departamento | Indicadores Principais |
+|--------------|------------------------|
+| **FIN** (Financeiro) | Faturamento, Investimento, Lucro, ROAS, Margem |
+| **MKT** (Marketing) | Leads, CPL, CTR, TX1 (Clique→Lead), Taxa Qualificação |
+| **COM1** (Comercial Aquisição) | Agendamentos, CAC, TX2 (Lead→Venda), Ticket Médio |
+| **COM2** (Comercial Recorrência) | LTV, LTV:CAC, Taxa Recompra, Churn |
+
+**Funcionalidades do painel 8Ps:**
+- Saúde do marketing por departamento (verde/amarelo/vermelho)
+- Alertas automáticos com ações recomendadas
+- CAC por canal de aquisição
+- Funil de conversão comparativo (período atual vs anterior)
+- Performance por fonte de tráfego
+- Análise cruzada Origem x Campanha
 
 ### Integrações
 
@@ -137,6 +164,30 @@ FRONTEND_URL=http://localhost:5173
 | GET | `/api/dashboard/filtros` | Opções de filtros |
 | GET | `/api/dashboard/lead-sale-correlation` | Correlação lead-venda |
 
+### Indicadores 8Ps
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| GET | `/api/dashboard/8ps` | Indicadores principais por departamento |
+| GET | `/api/dashboard/8ps/avancado` | Métricas avançadas 8Ps |
+| GET | `/api/dashboard/8ps/campanhas` | Performance por campanha |
+| GET | `/api/dashboard/8ps/gargalos` | Identificação de gargalos no funil |
+| GET | `/api/dashboard/8ps/publicos` | Segmentação dos 9 públicos |
+| GET | `/api/dashboard/8ps/alertas` | Alertas automáticos |
+| GET | `/api/dashboard/8ps/saude` | Status de saúde por departamento |
+| GET | `/api/dashboard/8ps/metas` | Metas configuráveis |
+
+### Customer Analytics
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| GET | `/api/dashboard/marketing-roas` | ROAS por fonte de tráfego |
+| GET | `/api/dashboard/funnel-comparison` | Funil comparativo de períodos |
+| GET | `/api/dashboard/cac-canal` | CAC por canal de aquisição |
+| GET | `/api/dashboard/customer-ltv` | LTV de clientes |
+| GET | `/api/dashboard/recurrence-metrics` | Métricas de recorrência |
+| GET | `/api/dashboard/churn-risk-summary` | Resumo de risco de churn |
+
 ### Meta Ads
 
 | Método | Endpoint | Descrição |
@@ -166,21 +217,24 @@ FRONTEND_URL=http://localhost:5173
 ## Tecnologias
 
 ### Backend
-- Node.js + Express
+- Node.js 18+ com Express
+- PostgreSQL (banco de dados)
 - Axios (requisições HTTP)
 - Node-cache (cache em memória)
-- Winston (logging)
+- Winston (logging estruturado)
 - date-fns (manipulação de datas)
+- node-cron (agendamento de tarefas)
 
 ### Frontend
-- React 18
+- Vue 3 (Composition API + Script Setup)
 - TypeScript
-- Vite
-- Tailwind CSS
-- Recharts (gráficos)
-- React Router
-- Axios
-- Lucide Icons
+- Vite 5
+- Pinia (state management)
+- Tailwind CSS (tema escuro nativo)
+- Chart.js + vue-chartjs (gráficos)
+- Vue Router 4
+- Axios com interceptors
+- Lucide Vue Next (ícones)
 
 ## Recursos dos Gráficos
 
@@ -319,6 +373,22 @@ DEBUG=* npm run dev
 - [Meta Marketing API](https://developers.facebook.com/docs/marketing-apis/)
 - [Recharts](https://recharts.org/)
 - [Tailwind CSS](https://tailwindcss.com/)
+
+## Changelog
+
+Veja o [CHANGELOG.md](CHANGELOG.md) para o histórico completo de alterações.
+
+### Última Atualização (v2.5.0 - 21/12/2025)
+
+- Implementação completa dos indicadores 8Ps (metodologia Conrado Adolpho)
+- Painel de saúde do marketing com alertas automáticos
+- CAC por canal de aquisição
+- Funil de conversão comparativo
+- Correções em cálculos de profissionais e pacientes novos
+
+## Contribuição
+
+Este é um projeto proprietário. Para contribuir, entre em contato com a equipe de desenvolvimento.
 
 ## Licença
 

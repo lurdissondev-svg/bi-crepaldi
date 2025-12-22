@@ -7,6 +7,7 @@ import usersRoutes from './users.routes.js';
 import rolesRoutes from './roles.routes.js';
 import businessDaysRoutes from './businessDays.routes.js';
 import enrichmentRoutes from './enrichment.routes.js';
+import metasConfigRoutes from './metas.routes.js';
 import bitrix24Service from '../services/bitrix24.service.js';
 import belleService from '../services/belle.service.js';
 import { metaAdsService } from '../services/meta.service.js';
@@ -154,6 +155,9 @@ router.use('/roles', rolesRoutes);
 
 // Business days configuration routes
 router.use('/business-days', businessDaysRoutes);
+
+// Metas configuration routes
+router.use('/metas-config', metasConfigRoutes);
 
 // Dashboard routes
 router.use('/dashboard', dashboardRoutes);

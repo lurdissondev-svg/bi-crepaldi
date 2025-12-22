@@ -606,6 +606,13 @@ class ApiService {
     return response.data.data;
   }
 
+  async triggerManualSync(): Promise<{ success: boolean; message: string }> {
+    const response = await this.client.post<ApiResponse<{ success: boolean; message: string }>>(
+      '/sync/run'
+    );
+    return response.data;
+  }
+
   // ===============================
   // Authentication
   // ===============================
@@ -763,6 +770,97 @@ class ApiService {
       notes,
     });
     return response.data.data;
+  }
+
+  // ===============================
+  // Metas Configuration
+  // ===============================
+
+  async getMetasConfig(year: number): Promise<Array<{
+    id?: number;
+    cod_estab: number;
+    estabelecimento_nome: string;
+    year: number;
+    month: number;
+    meta1: number;
+    meta2: number;
+    meta3: number;
+    notes: string | null;
+    updated_at: string | null;
+  }>> {
+    const response = await this.client.get<ApiResponse<Array<{
+      id?: number;
+      cod_estab: number;
+      estabelecimento_nome: string;
+      year: number;
+      month: number;
+      meta1: number;
+      meta2: number;
+      meta3: number;
+      notes: string | null;
+      updated_at: string | null;
+    }>>>(`/metas-config/${year}`);
+    return response.data.data;
+  }
+
+  async updateMetasConfig(
+    year: number,
+    month: number,
+    codEstab: number,
+    meta1: number,
+    meta2: number,
+    meta3: number,
+    estabelecimentoNome?: string,
+    notes?: string
+  ): Promise<{
+    cod_estab: number;
+    estabelecimento_nome: string;
+    year: number;
+    month: number;
+    meta1: number;
+    meta2: number;
+    meta3: number;
+    notes: string | null;
+  }> {
+    const response = await this.client.put<ApiResponse<{
+      cod_estab: number;
+      estabelecimento_nome: string;
+      year: number;
+      month: number;
+      meta1: number;
+      meta2: number;
+      meta3: number;
+      notes: string | null;
+    }>>(`/metas-config/${year}/${month}/${codEstab}`, {
+      meta1,
+      meta2,
+      meta3,
+      estabelecimento_nome: estabelecimentoNome,
+      notes,
+    });
+    return response.data.data;
+  }
+
+  async bulkUpdateMetasConfig(
+    year: number,
+    codEstab: number,
+    meta1: number,
+    meta2: number,
+    meta3: number,
+    estabelecimentoNome?: string,
+    notes?: string
+  ): Promise<{ success: boolean; message: string }> {
+    const response = await this.client.put<ApiResponse<{ success: boolean; message: string }>>(
+      `/metas-config/${year}/${codEstab}/bulk`,
+      {
+        meta1,
+        meta2,
+        meta3,
+        estabelecimento_nome: estabelecimentoNome,
+        notes,
+      }
+    );
+    return response.data;
   }
 }
 

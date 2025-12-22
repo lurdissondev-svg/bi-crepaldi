@@ -745,6 +745,7 @@ class SyncService {
   /**
    * Sincroniza clientes da Belle API para a tabela local
    * Necessário para o enriquecimento de dados de contato
+   * OTIMIZADO: Processa página por página para não sobrecarregar memória
    */
   async syncClientes() {
     const logId = await this.startSyncLog('clientes', 'full_sync');
@@ -762,78 +763,47 @@ class SyncService {
 
       for (const estab of estabsResult.rows) {
         try {
-          const clientes = await belleService.getTodosClientes(estab.cod_estab);
+          let pagina = 0;
+          let hasMore = true;
+          let estabFetched = 0;
 
-          if (!clientes || clientes.length === 0) {
-            logger.debug(`[Clientes] Nenhum cliente encontrado para estab ${estab.cod_estab}`);
-            continue;
-          }
+          // Processa página por página em vez de carregar tudo na memória
+          while (hasMore) {
+            const clientes = await belleService.getClientes(estab.cod_estab, pagina);
 
-          totalFetched += clientes.length;
-
-          for (const cliente of clientes) {
-            try {
-              // API Belle retorna 'codigo' como ID do cliente
-              const codCliente = parseInt(cliente.codigo) || parseInt(cliente.cod_cliente) || parseInt(cliente.id);
-              if (!codCliente || isNaN(codCliente)) {
-                logger.debug(`[Clientes] Cliente sem código válido: ${JSON.stringify(cliente).slice(0, 100)}`);
-                continue;
+            if (!clientes || clientes.length === 0) {
+              hasMore = false;
+              if (pagina === 0) {
+                logger.debug(`[Clientes] Nenhum cliente para estab ${estab.cod_estab}`);
               }
+              continue;
+            }
 
-              const result = await db.query(`
-                INSERT INTO clientes (
-                  cod_cliente, cod_estab, nome, telefone, celular, email,
-                  cpf, data_nascimento, sexo, endereco, cidade, uf, cep,
-                  data_cadastro, ativo, synced_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
-                ON CONFLICT (cod_cliente, cod_estab)
-                DO UPDATE SET
-                  nome = COALESCE(EXCLUDED.nome, clientes.nome),
-                  telefone = COALESCE(NULLIF(EXCLUDED.telefone, ''), clientes.telefone),
-                  celular = COALESCE(NULLIF(EXCLUDED.celular, ''), clientes.celular),
-                  email = COALESCE(NULLIF(EXCLUDED.email, ''), clientes.email),
-                  cpf = COALESCE(EXCLUDED.cpf, clientes.cpf),
-                  data_nascimento = COALESCE(EXCLUDED.data_nascimento, clientes.data_nascimento),
-                  sexo = COALESCE(EXCLUDED.sexo, clientes.sexo),
-                  endereco = COALESCE(EXCLUDED.endereco, clientes.endereco),
-                  cidade = COALESCE(EXCLUDED.cidade, clientes.cidade),
-                  uf = COALESCE(EXCLUDED.uf, clientes.uf),
-                  cep = COALESCE(EXCLUDED.cep, clientes.cep),
-                  ativo = EXCLUDED.ativo,
-                  synced_at = NOW(),
-                  updated_at = NOW()
-                RETURNING (xmax = 0) AS is_insert
-              `, [
-                codCliente,
-                estab.cod_estab,
-                cliente.nome || cliente.razao_social || `Cliente ${codCliente}`,
-                cliente.telefone || cliente.fone || null,
-                cliente.celular || cliente.fone_celular || null,
-                cliente.email || null,
-                cliente.cpf || cliente.cnpj_cpf || null,
-                cliente.dtNascimento || cliente.data_nascimento || null,
-                cliente.sexo ? cliente.sexo.charAt(0).toUpperCase() : null,
-                cliente.endereco || null,
-                cliente.cidade || null,
-                cliente.UF || cliente.uf || cliente.estado || null,
-                cliente.cep || null,
-                cliente.dtCadastro || cliente.data_cadastro || null,
-                cliente.ativo !== 'N' && cliente.ativo !== false,
-              ]);
+            // Processa batch de clientes desta página
+            const batchResult = await this.processClientesBatch(clientes, estab.cod_estab);
+            inserted += batchResult.inserted;
+            updated += batchResult.updated;
+            totalFetched += clientes.length;
+            estabFetched += clientes.length;
 
-              if (result.rows[0]?.is_insert) {
-                inserted++;
-              } else if (result.rowCount > 0) {
-                updated++;
-              }
-            } catch (error) {
-              logger.debug(`[Clientes] Erro ao inserir cliente ${cliente.cod_cliente || cliente.id}: ${error.message}`);
+            // Se retornou menos de 100, é a última página
+            if (clientes.length < 100) {
+              hasMore = false;
+            } else {
+              pagina++;
+            }
+
+            // Log a cada 500 clientes para acompanhar progresso
+            if (estabFetched % 500 === 0) {
+              logger.debug(`[Clientes] Estab ${estab.cod_estab}: ${estabFetched} clientes processados...`);
             }
           }
 
-          logger.debug(`[Clientes] Estab ${estab.cod_estab}: ${clientes.length} clientes processados`);
+          if (estabFetched > 0) {
+            logger.info(`[Clientes] Estab ${estab.cod_estab} (${estab.nome}): ${estabFetched} clientes`);
+          }
         } catch (error) {
-          logger.warn(`[Clientes] Erro ao buscar clientes do estab ${estab.cod_estab}: ${error.message}`);
+          logger.warn(`[Clientes] Erro estab ${estab.cod_estab}: ${error.message}`);
         }
       }
 
@@ -851,8 +821,132 @@ class SyncService {
       await this.finishSyncLog(logId, 'error', {}, error.message);
       timer({ status: 'error' });
       logger.error('[Clientes] Erro no sync:', error.message);
-      // Não lança erro para não interromper o sync principal
     }
+  }
+
+  /**
+   * Processa um batch de clientes usando INSERT em lote para melhor performance
+   */
+  async processClientesBatch(clientes, codEstab) {
+    let inserted = 0;
+    let updated = 0;
+
+    // Prepara valores para insert em lote
+    const values = [];
+    const params = [];
+    let paramIndex = 1;
+
+    for (const cliente of clientes) {
+      const codCliente = parseInt(cliente.codigo) || parseInt(cliente.cod_cliente) || parseInt(cliente.id);
+      if (!codCliente || isNaN(codCliente)) continue;
+
+      values.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12}, $${paramIndex + 13}, $${paramIndex + 14}, NOW())`);
+
+      // Trata datas inválidas (0000-00-00)
+      const dtNasc = cliente.dtNascimento || cliente.data_nascimento;
+      const dtCad = cliente.dtCadastro || cliente.data_cadastro;
+      const validDtNasc = dtNasc && !dtNasc.startsWith('0000') ? dtNasc : null;
+      const validDtCad = dtCad && !dtCad.startsWith('0000') ? dtCad : null;
+
+      params.push(
+        codCliente,
+        codEstab,
+        cliente.nome || cliente.razao_social || `Cliente ${codCliente}`,
+        cliente.telefone || cliente.fone || null,
+        cliente.celular || cliente.fone_celular || null,
+        cliente.email || null,
+        cliente.cpf || cliente.cnpj_cpf || null,
+        validDtNasc,
+        cliente.sexo ? cliente.sexo.charAt(0).toUpperCase() : null,
+        cliente.endereco || null,
+        cliente.cidade || null,
+        cliente.UF || cliente.uf || cliente.estado || null,
+        cliente.cep || null,
+        validDtCad,
+        cliente.ativo !== 'N' && cliente.ativo !== false
+      );
+
+      paramIndex += 15;
+    }
+
+    if (values.length === 0) return { inserted: 0, updated: 0 };
+
+    try {
+      const result = await db.query(`
+        INSERT INTO clientes (
+          cod_cliente, cod_estab, nome, telefone, celular, email,
+          cpf, data_nascimento, sexo, endereco, cidade, uf, cep,
+          data_cadastro, ativo, synced_at
+        ) VALUES ${values.join(', ')}
+        ON CONFLICT (cod_cliente, cod_estab)
+        DO UPDATE SET
+          nome = COALESCE(EXCLUDED.nome, clientes.nome),
+          telefone = COALESCE(NULLIF(EXCLUDED.telefone, ''), clientes.telefone),
+          celular = COALESCE(NULLIF(EXCLUDED.celular, ''), clientes.celular),
+          email = COALESCE(NULLIF(EXCLUDED.email, ''), clientes.email),
+          cpf = COALESCE(EXCLUDED.cpf, clientes.cpf),
+          data_nascimento = COALESCE(EXCLUDED.data_nascimento, clientes.data_nascimento),
+          sexo = COALESCE(EXCLUDED.sexo, clientes.sexo),
+          endereco = COALESCE(EXCLUDED.endereco, clientes.endereco),
+          cidade = COALESCE(EXCLUDED.cidade, clientes.cidade),
+          uf = COALESCE(EXCLUDED.uf, clientes.uf),
+          cep = COALESCE(EXCLUDED.cep, clientes.cep),
+          ativo = EXCLUDED.ativo,
+          synced_at = NOW(),
+          updated_at = NOW()
+      `, params);
+
+      // Estima inserted vs updated (PostgreSQL não retorna isso facilmente em bulk)
+      updated = result.rowCount;
+    } catch (error) {
+      logger.debug(`[Clientes] Erro no batch insert: ${error.message}`);
+      // Fallback: processa um por um se o batch falhar
+      for (const cliente of clientes) {
+        try {
+          const codCliente = parseInt(cliente.codigo) || parseInt(cliente.cod_cliente) || parseInt(cliente.id);
+          if (!codCliente || isNaN(codCliente)) continue;
+
+          // Trata datas inválidas
+          const dtNasc = cliente.dtNascimento || cliente.data_nascimento;
+          const dtCad = cliente.dtCadastro || cliente.data_cadastro;
+          const validDtNasc = dtNasc && !dtNasc.startsWith('0000') ? dtNasc : null;
+          const validDtCad = dtCad && !dtCad.startsWith('0000') ? dtCad : null;
+
+          const result = await db.query(`
+            INSERT INTO clientes (cod_cliente, cod_estab, nome, telefone, celular, email, cpf, data_nascimento, sexo, endereco, cidade, uf, cep, data_cadastro, ativo, synced_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+            ON CONFLICT (cod_cliente, cod_estab) DO UPDATE SET
+              nome = COALESCE(EXCLUDED.nome, clientes.nome),
+              telefone = COALESCE(NULLIF(EXCLUDED.telefone, ''), clientes.telefone),
+              celular = COALESCE(NULLIF(EXCLUDED.celular, ''), clientes.celular),
+              synced_at = NOW(), updated_at = NOW()
+            RETURNING (xmax = 0) AS is_insert
+          `, [
+            codCliente, codEstab,
+            cliente.nome || `Cliente ${codCliente}`,
+            cliente.telefone || null,
+            cliente.celular || null,
+            cliente.email || null,
+            cliente.cpf || null,
+            validDtNasc,
+            cliente.sexo ? cliente.sexo.charAt(0).toUpperCase() : null,
+            cliente.endereco || null,
+            cliente.cidade || null,
+            cliente.UF || cliente.uf || null,
+            cliente.cep || null,
+            validDtCad,
+            cliente.ativo !== 'N' && cliente.ativo !== false
+          ]);
+
+          if (result.rows[0]?.is_insert) inserted++;
+          else if (result.rowCount > 0) updated++;
+        } catch (err) {
+          // Ignora erros individuais
+        }
+      }
+    }
+
+    return { inserted, updated };
   }
 
   // ==================== SYNC PROCEDIMENTOS E PROFISSIONAIS CACHE ====================

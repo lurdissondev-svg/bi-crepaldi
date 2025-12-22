@@ -7,7 +7,7 @@ import TabNavigation from '@/components/navigation/TabNavigation.vue'
 import GaugeChart from '@/components/charts/GaugeChart.vue'
 import RevalidatingIndicator from '@/components/ui/RevalidatingIndicator.vue'
 import PageSkeleton from '@/components/ui/PageSkeleton.vue'
-import { Target, Calendar, TrendingUp, DollarSign, Settings, ChevronDown, ChevronUp, Save, RotateCcw } from 'lucide-vue-next'
+import { Target, Calendar, TrendingUp, DollarSign, Settings, ChevronDown, ChevronUp, Save, RotateCcw, Edit3, X } from 'lucide-vue-next'
 import { formatCurrency } from '@/utils/format'
 import api from '@/services/api'
 import type { MetaEstabelecimento, MetaInfo } from '@/types'
@@ -19,6 +19,77 @@ const isLoading = computed(() => loadingStates.value.metas)
 const isRevalidating = computed(() => revalidatingStates.value.metas)
 
 const metasData = computed(() => data.value.metas)
+
+// Metas Configuration
+const showMetasConfig = ref(false)
+const metasConfigYear = ref(new Date().getFullYear())
+const metasConfigMonth = ref(new Date().getMonth() + 1)
+const editingEstabelecimento = ref<number | null>(null)
+const metasEditValues = ref<{ meta1: number; meta2: number; meta3: number }>({ meta1: 0, meta2: 0, meta3: 0 })
+const isSavingMetas = ref(false)
+const metasError = ref('')
+
+// Mapping of estabelecimento names to cod_estabs (based on config)
+const estabelecimentosCodEstab: Record<string, number[]> = {
+  'SPA': [2, 11],
+  'Convenios': [5],
+  'Bela Laser': [12],
+  'Nutrologia': [14],
+  'Dermato': [1],
+}
+
+function startEditingMetas(estabName: string, meta1: number, meta2: number, meta3: number) {
+  const codEstabs = estabelecimentosCodEstab[estabName]
+  if (codEstabs && codEstabs.length > 0) {
+    editingEstabelecimento.value = codEstabs[0]
+    metasEditValues.value = { meta1, meta2, meta3 }
+  }
+}
+
+function cancelEditingMetas() {
+  editingEstabelecimento.value = null
+  metasEditValues.value = { meta1: 0, meta2: 0, meta3: 0 }
+}
+
+async function saveMetas(estabName: string) {
+  const codEstabs = estabelecimentosCodEstab[estabName]
+  if (!codEstabs || codEstabs.length === 0) return
+
+  isSavingMetas.value = true
+  metasError.value = ''
+
+  try {
+    // Save for all cod_estabs of this establishment (e.g., SPA has 2 and 11)
+    for (const codEstab of codEstabs) {
+      await api.updateMetasConfig(
+        metasConfigYear.value,
+        metasConfigMonth.value,
+        codEstab,
+        metasEditValues.value.meta1,
+        metasEditValues.value.meta2,
+        metasEditValues.value.meta3,
+        estabName
+      )
+    }
+    editingEstabelecimento.value = null
+    // Refresh data
+    store.refetch()
+  } catch (e) {
+    console.error('Erro ao salvar metas:', e)
+    metasError.value = 'Erro ao salvar metas'
+  } finally {
+    isSavingMetas.value = false
+  }
+}
+
+// Update metasConfigMonth when filter changes
+watch(() => filters.value, (newFilters) => {
+  if (newFilters.dataInicio) {
+    const date = new Date(newFilters.dataInicio)
+    metasConfigYear.value = date.getFullYear()
+    metasConfigMonth.value = date.getMonth() + 1
+  }
+}, { immediate: true })
 
 // Business Days Configuration
 const showBusinessDaysConfig = ref(false)
@@ -316,7 +387,48 @@ function handleFilterChange(newFilters: typeof filters.value) {
                 </p>
               </div>
             </div>
+            <button
+              v-if="editingEstabelecimento !== estabelecimentosCodEstab['SPA'][0]"
+              @click="startEditingMetas('SPA', metasData.metaSpa.meta1?.metaValor || 700000, metasData.metaSpa.meta2?.metaValor || 780000, metasData.metaSpa.meta3?.metaValor || 850000)"
+              class="p-2 rounded-lg hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
+              title="Editar metas"
+            >
+              <Edit3 class="w-4 h-4" />
+            </button>
           </div>
+
+          <!-- Edit Mode -->
+          <div v-if="editingEstabelecimento === estabelecimentosCodEstab['SPA'][0]" class="mb-4 p-4 bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-accent)]">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-sm font-medium text-[var(--color-text-primary)]">Editar Metas - {{ monthNames[metasConfigMonth - 1] }}/{{ metasConfigYear }}</span>
+              <button @click="cancelEditingMetas" class="p-1 rounded hover:bg-[var(--color-bg-hover)]">
+                <X class="w-4 h-4 text-[var(--color-text-muted)]" />
+              </button>
+            </div>
+            <div class="grid grid-cols-3 gap-3 mb-3">
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 1</label>
+                <input v-model.number="metasEditValues.meta1" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 2</label>
+                <input v-model.number="metasEditValues.meta2" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 3</label>
+                <input v-model.number="metasEditValues.meta3" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button @click="saveMetas('SPA')" :disabled="isSavingMetas" class="flex-1 px-3 py-1.5 bg-[var(--color-accent)] text-white rounded text-sm font-medium hover:bg-[var(--color-accent-hover)] disabled:opacity-50">
+                {{ isSavingMetas ? 'Salvando...' : 'Salvar' }}
+              </button>
+              <button @click="cancelEditingMetas" class="px-3 py-1.5 border border-[var(--color-border-primary)] rounded text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)]">
+                Cancelar
+              </button>
+            </div>
+          </div>
+
           <div class="space-y-4">
             <div v-for="(meta, key) in [metasData.metaSpa.meta1, metasData.metaSpa.meta2, metasData.metaSpa.meta3]" :key="key" class="p-4 bg-[var(--color-bg-tertiary)] rounded-lg">
               <div class="flex items-center justify-between mb-2">
@@ -354,7 +466,48 @@ function handleFilterChange(newFilters: typeof filters.value) {
                 </p>
               </div>
             </div>
+            <button
+              v-if="editingEstabelecimento !== estabelecimentosCodEstab['Convenios'][0]"
+              @click="startEditingMetas('Convenios', metasData.metaConvenios.meta1?.metaValor || 121000, metasData.metaConvenios.meta2?.metaValor || 136000, metasData.metaConvenios.meta3?.metaValor || 151000)"
+              class="p-2 rounded-lg hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
+              title="Editar metas"
+            >
+              <Edit3 class="w-4 h-4" />
+            </button>
           </div>
+
+          <!-- Edit Mode -->
+          <div v-if="editingEstabelecimento === estabelecimentosCodEstab['Convenios'][0]" class="mb-4 p-4 bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-accent)]">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-sm font-medium text-[var(--color-text-primary)]">Editar Metas - {{ monthNames[metasConfigMonth - 1] }}/{{ metasConfigYear }}</span>
+              <button @click="cancelEditingMetas" class="p-1 rounded hover:bg-[var(--color-bg-hover)]">
+                <X class="w-4 h-4 text-[var(--color-text-muted)]" />
+              </button>
+            </div>
+            <div class="grid grid-cols-3 gap-3 mb-3">
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 1</label>
+                <input v-model.number="metasEditValues.meta1" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 2</label>
+                <input v-model.number="metasEditValues.meta2" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 3</label>
+                <input v-model.number="metasEditValues.meta3" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button @click="saveMetas('Convenios')" :disabled="isSavingMetas" class="flex-1 px-3 py-1.5 bg-[var(--color-accent)] text-white rounded text-sm font-medium hover:bg-[var(--color-accent-hover)] disabled:opacity-50">
+                {{ isSavingMetas ? 'Salvando...' : 'Salvar' }}
+              </button>
+              <button @click="cancelEditingMetas" class="px-3 py-1.5 border border-[var(--color-border-primary)] rounded text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)]">
+                Cancelar
+              </button>
+            </div>
+          </div>
+
           <div class="space-y-4">
             <div v-for="(meta, key) in [metasData.metaConvenios.meta1, metasData.metaConvenios.meta2, metasData.metaConvenios.meta3]" :key="key" class="p-4 bg-[var(--color-bg-tertiary)] rounded-lg">
               <div class="flex items-center justify-between mb-2">
@@ -392,7 +545,48 @@ function handleFilterChange(newFilters: typeof filters.value) {
                 </p>
               </div>
             </div>
+            <button
+              v-if="editingEstabelecimento !== estabelecimentosCodEstab['Bela Laser'][0]"
+              @click="startEditingMetas('Bela Laser', metasData.metaBelaLaser.meta1?.metaValor || 100000, metasData.metaBelaLaser.meta2?.metaValor || 124000, metasData.metaBelaLaser.meta3?.metaValor || 150000)"
+              class="p-2 rounded-lg hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
+              title="Editar metas"
+            >
+              <Edit3 class="w-4 h-4" />
+            </button>
           </div>
+
+          <!-- Edit Mode -->
+          <div v-if="editingEstabelecimento === estabelecimentosCodEstab['Bela Laser'][0]" class="mb-4 p-4 bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-accent)]">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-sm font-medium text-[var(--color-text-primary)]">Editar Metas - {{ monthNames[metasConfigMonth - 1] }}/{{ metasConfigYear }}</span>
+              <button @click="cancelEditingMetas" class="p-1 rounded hover:bg-[var(--color-bg-hover)]">
+                <X class="w-4 h-4 text-[var(--color-text-muted)]" />
+              </button>
+            </div>
+            <div class="grid grid-cols-3 gap-3 mb-3">
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 1</label>
+                <input v-model.number="metasEditValues.meta1" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 2</label>
+                <input v-model.number="metasEditValues.meta2" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 3</label>
+                <input v-model.number="metasEditValues.meta3" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button @click="saveMetas('Bela Laser')" :disabled="isSavingMetas" class="flex-1 px-3 py-1.5 bg-[var(--color-accent)] text-white rounded text-sm font-medium hover:bg-[var(--color-accent-hover)] disabled:opacity-50">
+                {{ isSavingMetas ? 'Salvando...' : 'Salvar' }}
+              </button>
+              <button @click="cancelEditingMetas" class="px-3 py-1.5 border border-[var(--color-border-primary)] rounded text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)]">
+                Cancelar
+              </button>
+            </div>
+          </div>
+
           <div class="space-y-4">
             <div v-for="(meta, key) in [metasData.metaBelaLaser.meta1, metasData.metaBelaLaser.meta2, metasData.metaBelaLaser.meta3]" :key="key" class="p-4 bg-[var(--color-bg-tertiary)] rounded-lg">
               <div class="flex items-center justify-between mb-2">
@@ -430,7 +624,48 @@ function handleFilterChange(newFilters: typeof filters.value) {
                 </p>
               </div>
             </div>
+            <button
+              v-if="editingEstabelecimento !== estabelecimentosCodEstab['Nutrologia'][0]"
+              @click="startEditingMetas('Nutrologia', metasData.metaNutrologia.meta1?.metaValor || 257000, metasData.metaNutrologia.meta2?.metaValor || 294000, metasData.metaNutrologia.meta3?.metaValor || 331000)"
+              class="p-2 rounded-lg hover:bg-[var(--color-bg-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
+              title="Editar metas"
+            >
+              <Edit3 class="w-4 h-4" />
+            </button>
           </div>
+
+          <!-- Edit Mode -->
+          <div v-if="editingEstabelecimento === estabelecimentosCodEstab['Nutrologia'][0]" class="mb-4 p-4 bg-[var(--color-bg-secondary)] rounded-lg border border-[var(--color-accent)]">
+            <div class="flex items-center justify-between mb-3">
+              <span class="text-sm font-medium text-[var(--color-text-primary)]">Editar Metas - {{ monthNames[metasConfigMonth - 1] }}/{{ metasConfigYear }}</span>
+              <button @click="cancelEditingMetas" class="p-1 rounded hover:bg-[var(--color-bg-hover)]">
+                <X class="w-4 h-4 text-[var(--color-text-muted)]" />
+              </button>
+            </div>
+            <div class="grid grid-cols-3 gap-3 mb-3">
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 1</label>
+                <input v-model.number="metasEditValues.meta1" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 2</label>
+                <input v-model.number="metasEditValues.meta2" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+              <div>
+                <label class="text-xs text-[var(--color-text-muted)]">Meta 3</label>
+                <input v-model.number="metasEditValues.meta3" type="number" class="w-full px-2 py-1.5 mt-1 rounded border border-[var(--color-border-primary)] bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] text-sm" />
+              </div>
+            </div>
+            <div class="flex gap-2">
+              <button @click="saveMetas('Nutrologia')" :disabled="isSavingMetas" class="flex-1 px-3 py-1.5 bg-[var(--color-accent)] text-white rounded text-sm font-medium hover:bg-[var(--color-accent-hover)] disabled:opacity-50">
+                {{ isSavingMetas ? 'Salvando...' : 'Salvar' }}
+              </button>
+              <button @click="cancelEditingMetas" class="px-3 py-1.5 border border-[var(--color-border-primary)] rounded text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)]">
+                Cancelar
+              </button>
+            </div>
+          </div>
+
           <div class="space-y-4">
             <div v-for="(meta, key) in [metasData.metaNutrologia.meta1, metasData.metaNutrologia.meta2, metasData.metaNutrologia.meta3]" :key="key" class="p-4 bg-[var(--color-bg-tertiary)] rounded-lg">
               <div class="flex items-center justify-between mb-2">

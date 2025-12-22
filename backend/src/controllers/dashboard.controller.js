@@ -567,7 +567,7 @@ export const dashboardController = {
       const timer = Date.now();
 
       // TUDO DO BANCO - sem chamadas a APIs externas (Bitrix24/Belle offline)
-      const [leadsAnalytics, dealsWonData, faturamento] = await Promise.all([
+      const [leadsAnalytics, dealsWonData, faturamento, profissionaisData, procedimentosData] = await Promise.all([
         // Leads do banco de dados
         dashboardDBService.getLeadsAnalytics(startDate, endDate),
         // Deals WON do banco (substitui bitrix24Service.getDealsAnalytics)
@@ -576,6 +576,10 @@ export const dashboardController = {
         })),
         // Faturamento do banco (substitui belleService.getAnalyticsFaturamento)
         dashboardDBService.getFaturamentoFromDB(startDate, endDate, []),
+        // Profissionais por vendas
+        dashboardDBService.getProfissionaisFromVendas(startDate, endDate, 50).catch(() => []),
+        // Procedimentos por estabelecimento
+        dashboardDBService.getProcedimentosPorEstabelecimentoFromVendas(startDate, endDate, 100).catch(() => ({})),
       ]);
 
       logger.info(`[Comercial] Dados carregados em ${Date.now() - timer}ms`);
@@ -620,26 +624,40 @@ export const dashboardController = {
         };
       });
 
-      // Procedimentos por centro de custo
+      // Consolidar procedimentos de todos os estabelecimentos
+      const todosProcedimentos = [];
+      Object.entries(procedimentosData || {}).forEach(([estabNome, dados]) => {
+        const procs = dados?.byValor || dados?.byQuantidade || [];
+        procs.forEach(p => {
+          todosProcedimentos.push({
+            ...p,
+            estabelecimento: estabNome,
+          });
+        });
+      });
+
+      // Procedimentos por centro de custo (baseado no cod_estab)
       const procedimentosPorCentro = {
-        clinicaSpa: faturamento.procedimentos?.filter(p =>
-          p.nome?.toLowerCase().includes('massagem') ||
-          p.nome?.toLowerCase().includes('relaxante') ||
-          p.nome?.toLowerCase().includes('drenagem')
-        ) || [],
-        belaLaser: faturamento.procedimentos?.filter(p =>
-          p.nome?.toLowerCase().includes('depilação') ||
-          p.nome?.toLowerCase().includes('laser') ||
-          p.nome?.toLowerCase().includes('ultraforme')
-        ) || [],
-        convenios: [],
+        clinicaSpa: Object.entries(procedimentosData || {})
+          .filter(([nome]) => nome.toLowerCase().includes('spa') || nome.toLowerCase().includes('estética') || nome.toLowerCase().includes('dermato'))
+          .flatMap(([, dados]) => dados?.byValor || []),
+        belaLaser: Object.entries(procedimentosData || {})
+          .filter(([nome]) => nome.toLowerCase().includes('bela') || nome.toLowerCase().includes('laser'))
+          .flatMap(([, dados]) => dados?.byValor || []),
+        convenios: Object.entries(procedimentosData || {})
+          .filter(([nome]) => nome.toLowerCase().includes('convên') || nome.toLowerCase().includes('convenio'))
+          .flatMap(([, dados]) => dados?.byValor || []),
       };
 
-      // Procedimentos de paciente novo
+      // Procedimentos de paciente novo (top 15 por valor)
+      const topProcedimentos = todosProcedimentos
+        .sort((a, b) => (b.valor || 0) - (a.valor || 0))
+        .slice(0, 15);
+
       const procedimentosPacienteNovo = {
-        labels: faturamento.procedimentos?.slice(0, 15).map(p => p.nome) || [],
-        vendas: faturamento.procedimentos?.slice(0, 15).map(p => p.quantidade) || [],
-        faturamento: faturamento.procedimentos?.slice(0, 15).map(p => p.valor) || [],
+        labels: topProcedimentos.map(p => p.nome || p.procedimento) || [],
+        vendas: topProcedimentos.map(p => p.quantidade || 0) || [],
+        faturamento: topProcedimentos.map(p => p.valor || 0) || [],
       };
 
       // Calcular faturamento por estabelecimento para metas
@@ -663,8 +681,8 @@ export const dashboardController = {
         });
       }
 
-      // Profissionais: usa dados do faturamento (banco de dados)
-      const profissionais = faturamento.profissionais || [];
+      // Profissionais: usa dados do banco de vendas
+      const profissionais = profissionaisData || [];
 
       res.json({
         success: true,

@@ -1853,8 +1853,9 @@ class DashboardDBService {
   }
 
   /**
-   * Busca profissionais DIRETO DA TABELA VENDAS
-   * Usa datas exatas para períodos curtos (hoje, última semana, etc.)
+   * Busca profissionais do cache mensal
+   * NOTA: A API de vendas Belle não retorna dados de profissional,
+   * então usamos sempre o cache que é populado via movimentacao_detalhado e venda_planos
    * @param {string} startDate - Data início (yyyy-MM-dd)
    * @param {string} endDate - Data fim (yyyy-MM-dd)
    * @param {number} limit - Número máximo de resultados
@@ -1863,26 +1864,26 @@ class DashboardDBService {
     const timer = Date.now();
 
     try {
-      // Query que busca profissionais das vendas com datas exatas
+      // Usa o cache mensal pois a API de vendas não retorna dados de profissional
+      // O cache é populado via sync de movimentacao_detalhado e venda_planos
+      const startMonth = startDate.substring(0, 7); // yyyy-MM
+      const endMonth = endDate.substring(0, 7);
+
       const query = `
         SELECT
-          COALESCE(nome_profissional, 'Não identificado') as nome,
-          COUNT(*) as vendas,
-          SUM(COALESCE(valor_venda, 0)) as valor
-        FROM vendas
-        WHERE data_venda >= $1
-          AND data_venda <= $2
-          AND confirmado = 'S'
-          AND nome_profissional IS NOT NULL
-          AND nome_profissional != ''
-        GROUP BY nome_profissional
+          nome,
+          SUM(vendas) as vendas,
+          SUM(valor) as valor
+        FROM profissionais_cache
+        WHERE ano_mes >= $1 AND ano_mes <= $2
+        GROUP BY nome
         ORDER BY valor DESC
         LIMIT $3
       `;
 
-      const result = await db.query(query, [startDate, endDate, limit]);
+      const result = await db.query(query, [startMonth, endMonth, limit]);
 
-      logger.debug(`[DB Vendas] getProfissionaisFromVendas: ${result.rows.length} profissionais em ${Date.now() - timer}ms`);
+      logger.debug(`[DB Cache] getProfissionaisFromVendas: ${result.rows.length} profissionais em ${Date.now() - timer}ms`);
 
       return result.rows.map(row => ({
         nome: row.nome,
@@ -1890,7 +1891,7 @@ class DashboardDBService {
         valor: parseFloat(row.valor) || 0,
       }));
     } catch (error) {
-      logger.error('[DB Vendas] Erro em getProfissionaisFromVendas:', error.message);
+      logger.error('[DB Cache] Erro em getProfissionaisFromVendas:', error.message);
       return [];
     }
   }
@@ -3324,62 +3325,123 @@ class DashboardDBService {
   /**
    * Calcula Taxa de No-Show (faltas em consultas agendadas)
    * Baseado em agendamentos vs comparecimentos
+   *
+   * Agendados = Leads com status de sucesso (semantica 'S') no Bitrix24
+   * Compareceram = Leads que aparecem em vendas dentro de 30 dias
+   *
+   * Usa duas estrategias de matching:
+   * 1. Por telefone (quando clientes tem dados)
+   * 2. Por nome (fallback quando clientes esta vazio)
    */
   async getTaxaNoShow(startDate, endDate) {
     const timer = Date.now();
 
     try {
-      // No-show baseado em leads que foram CONVERTED (agendaram) mas não aparecem em vendas
+      // Estrategia HIBRIDA: combina telefone + nome para melhor matching
+      // 1. Match por telefone (quando lead tem telefone)
+      // 2. Match por nome (para leads sem telefone ou como fallback)
       const result = await db.query(`
         WITH agendados AS (
           SELECT
             l.bitrix_id,
             l.nome,
-            l.bitrix_created_at,
-            l.telefones
+            l.sobrenome,
+            l.telefones,
+            LOWER(TRIM(COALESCE(l.nome, '') || ' ' || COALESCE(l.sobrenome, ''))) as nome_completo,
+            CASE WHEN l.telefones IS NOT NULL AND l.telefones <> '[]'::jsonb THEN true ELSE false END as tem_telefone
           FROM leads l
-          WHERE l.status_id = 'CONVERTED'
+          LEFT JOIN lead_statuses ls ON l.status_id = ls.bitrix_status_id
+          WHERE (ls.semantica = 'S' OR l.status_id = 'CONVERTED')
             AND l.bitrix_created_at >= $1
             AND l.bitrix_created_at < ($2::date + interval '1 day')
         ),
-        compareceram AS (
+        -- Clientes com vendas no periodo
+        clientes_vendas AS (
+          SELECT DISTINCT c.cod_cliente, c.cod_estab, c.nome, c.telefone, c.celular
+          FROM clientes c
+          JOIN vendas v ON v.cod_cliente = c.cod_cliente AND v.cod_estab = c.cod_estab
+          WHERE v.data_venda >= $1 AND v.data_venda <= ($2::date + interval '30 days')
+        ),
+        -- Nomes de clientes em contas_receber (para matching por nome)
+        clientes_nomes AS (
+          SELECT DISTINCT LOWER(TRIM(raw_data->>'nome_cliente')) as nome_cliente
+          FROM contas_receber
+          WHERE dt_lancamento >= $1
+            AND dt_lancamento <= ($2::date + interval '30 days')
+            AND valor_bruto > 0
+            AND raw_data->>'nome_cliente' IS NOT NULL
+        ),
+        -- Compareceram por TELEFONE
+        compareceram_telefone AS (
           SELECT DISTINCT a.bitrix_id
           FROM agendados a
-          JOIN clientes c ON (
-            c.telefone IS NOT NULL
+          WHERE a.tem_telefone
             AND EXISTS (
-              SELECT 1 FROM jsonb_array_elements_text(a.telefones) AS phone
-              WHERE regexp_replace(phone, '[^0-9]', '', 'g') = regexp_replace(c.telefone, '[^0-9]', '', 'g')
+              SELECT 1 FROM clientes_vendas cv
+              WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements_text(a.telefones) AS phone
+                WHERE LENGTH(regexp_replace(phone, '[^0-9]', '', 'g')) >= 8
+                  AND (
+                    RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = RIGHT(regexp_replace(COALESCE(cv.telefone, ''), '[^0-9]', '', 'g'), 9)
+                    OR RIGHT(regexp_replace(phone, '[^0-9]', '', 'g'), 9) = RIGHT(regexp_replace(COALESCE(cv.celular, ''), '[^0-9]', '', 'g'), 9)
+                  )
+              )
             )
-          )
-          JOIN vendas v ON v.codcliente = c.codcliente
-          WHERE v.data >= $1 AND v.data <= ($2::date + interval '30 days')
+        ),
+        -- Compareceram por NOME (leads sem telefone ou nao encontrados por telefone)
+        compareceram_nome AS (
+          SELECT DISTINCT a.bitrix_id
+          FROM agendados a
+          WHERE a.bitrix_id NOT IN (SELECT bitrix_id FROM compareceram_telefone)
+            AND a.nome_completo != ''
+            AND LENGTH(SPLIT_PART(a.nome_completo, ' ', 1)) >= 3
+            AND EXISTS (
+              SELECT 1 FROM clientes_nomes cn
+              WHERE cn.nome_cliente ILIKE '%' || SPLIT_PART(a.nome_completo, ' ', 1) || '%'
+            )
+        ),
+        -- Combina ambos os metodos
+        compareceram AS (
+          SELECT bitrix_id FROM compareceram_telefone
+          UNION
+          SELECT bitrix_id FROM compareceram_nome
         )
         SELECT
           (SELECT COUNT(*) FROM agendados) as total_agendados,
+          (SELECT COUNT(*) FROM agendados WHERE tem_telefone) as com_telefone,
+          (SELECT COUNT(*) FROM compareceram_telefone) as match_telefone,
+          (SELECT COUNT(*) FROM compareceram_nome) as match_nome,
           (SELECT COUNT(*) FROM compareceram) as compareceram
       `, [startDate, endDate]);
 
       const stats = result.rows[0];
       const totalAgendados = parseInt(stats?.total_agendados) || 0;
       const compareceram = parseInt(stats?.compareceram) || 0;
+      const matchTelefone = parseInt(stats?.match_telefone) || 0;
+      const matchNome = parseInt(stats?.match_nome) || 0;
       const faltas = Math.max(0, totalAgendados - compareceram);
       const taxaNoShow = totalAgendados > 0
         ? Math.round((faltas / totalAgendados) * 1000) / 10
         : 0;
 
       const duration = Date.now() - timer;
-      logger.debug(`[DB] getTaxaNoShow: ${duration}ms`);
+      logger.debug(`[DB] getTaxaNoShow: ${duration}ms (telefone=${matchTelefone}, nome=${matchNome})`);
 
       return {
         totalAgendados,
         compareceram,
         faltas,
         taxaNoShow,
+        matchStrategy: 'hybrid',
+        matchDetails: {
+          porTelefone: matchTelefone,
+          porNome: matchNome,
+          leadsComTelefone: parseInt(stats?.com_telefone) || 0,
+        },
         impacto: {
           agendaFalsa: faltas,
-          medicoOcioso: Math.round(faltas * 0.5), // Estimativa: 30min por consulta
-          faturamentoPerdido: faltas * 350, // Estimativa média de consulta
+          medicoOcioso: Math.round(faltas * 0.5),
+          faturamentoPerdido: faltas * 350,
         },
       };
     } catch (error) {
@@ -3389,6 +3451,7 @@ class DashboardDBService {
         compareceram: 0,
         faltas: 0,
         taxaNoShow: 0,
+        matchStrategy: 'error',
         impacto: { agendaFalsa: 0, medicoOcioso: 0, faturamentoPerdido: 0 },
       };
     }
